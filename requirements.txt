@@ -1,0 +1,17 @@
+python-dotenv
+pandas
+openpyxl
+pydantic
+pytest
+
+langchain
+langchain-openai
+langgraph
+
+supabase
+pinecone
+
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
