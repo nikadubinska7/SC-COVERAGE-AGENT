@@ -6,6 +6,7 @@ from src.services.transformations import build_coverage_report
 from src.state import CoverageState
 from src.tools.pinecone_tool import retrieve_reporting_rules
 from src.tools.supabase_tool import query_orderbook
+from src.agent import run_react_analysis
 
 
 def add_error(state: CoverageState, message: str) -> CoverageState:
@@ -89,20 +90,24 @@ def validate_report_node(state: CoverageState) -> CoverageState:
 
 
 def generate_observations_node(state: CoverageState) -> CoverageState:
-    summary = state["report_data"]["executive_summary"]
+    try:
+        observations = run_react_analysis(state["report_data"])
+        state["observations"] = observations
+        state["status"] = "completed_local"
+        return state
+    except Exception as exc:
+        summary = state.get("report_data", {}).get("executive_summary", {})
+        coverage_pct = summary.get("coverage_percentage", 0) * 100
 
-    coverage_pct = summary["coverage_percentage"] * 100
-
-    observations = [
-        f"Total report value is {summary['total_value']:,.2f}.",
-        f"Coverage is {coverage_pct:.1f}% based on Booked/Shipped plus Available value.",
-        f"Open order exposure is {summary['open_order_value']:,.2f}.",
-        f"Included seasons: {', '.join(summary['seasons'])}.",
-    ]
-
-    state["observations"] = observations
-    state["status"] = "completed_local"
-    return state
+        state["observations"] = [
+            f"Total report value is {summary.get('total_value', 0):,.2f}.",
+            f"Coverage is {coverage_pct:.1f}% based on Booked/Shipped plus Available value.",
+            f"Open order exposure is {summary.get('open_order_value', 0):,.2f}.",
+            f"Included seasons: {', '.join(summary.get('seasons', []))}.",
+            f"ReAct observation generation failed; fallback deterministic observations used. Error: {exc}",
+        ]
+        state["status"] = "completed_local"
+        return state
 
 
 def should_continue(state: CoverageState) -> str:
