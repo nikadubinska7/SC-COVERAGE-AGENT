@@ -6,7 +6,7 @@ from typing import Any
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 
 @tool
@@ -82,7 +82,7 @@ def build_react_agent():
         check_validation_status,
     ]
 
-    return create_react_agent(llm, tools)
+    return create_agent(model=llm, tools=tools)
 
 
 def run_react_analysis(report_data: dict[str, Any]) -> list[str]:
