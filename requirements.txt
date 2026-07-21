@@ -6,6 +6,8 @@ pytest
 
 langchain
 langchain-openai
+langchain-community
+tiktoken
 langgraph
 
 supabase
