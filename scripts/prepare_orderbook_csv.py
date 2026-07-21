@@ -53,6 +53,9 @@ NUMERIC_COLUMNS = [
 ]
 
 
+NON_TEXT_COLUMNS = set(NUMERIC_COLUMNS + DATE_COLUMNS + ["source_row_number"])
+
+
 def normalize_fallback_column_name(name: str) -> str:
     """Normalize columns not explicitly mapped."""
     name = str(name).strip().lower()
@@ -72,7 +75,33 @@ def clean_money_series(series: pd.Series) -> pd.Series:
         .str.replace(" ", "", regex=False)
         .replace({"nan": None, "None": None, "": None})
     )
-    return pd.to_numeric(cleaned, errors="coerce").fillna(0)
+    return pd.to_numeric(cleaned, errors="coerce").fillna(0).astype(float)
+
+
+def normalize_week_commencing(series: pd.Series, eta_series: pd.Series) -> pd.Series:
+    eta_dates = pd.to_datetime(eta_series, errors="coerce")
+    dates = []
+
+    for value, eta in zip(series, eta_dates):
+        if pd.isna(value) or pd.isna(eta):
+            dates.append(None)
+            continue
+
+        parsed = pd.to_datetime(str(value).strip(), format="%d-%b", errors="coerce")
+        if pd.isna(parsed):
+            dates.append(None)
+            continue
+
+        week_date = pd.Timestamp(year=eta.year, month=parsed.month, day=parsed.day)
+
+        if week_date - eta > pd.Timedelta(days=180):
+            week_date = week_date - pd.DateOffset(years=1)
+        elif eta - week_date > pd.Timedelta(days=180):
+            week_date = week_date + pd.DateOffset(years=1)
+
+        dates.append(week_date.date())
+
+    return pd.Series(dates, index=series.index)
 
 
 def main():
@@ -100,7 +129,7 @@ def main():
 
     # Normalize text columns.
     for col in df.columns:
-        if col not in NUMERIC_COLUMNS and col not in DATE_COLUMNS:
+        if col not in NON_TEXT_COLUMNS:
             df[col] = df[col].astype("string").str.strip()
 
     # Normalize financial fields.
@@ -111,11 +140,37 @@ def main():
     # Normalize dates.
     for col in DATE_COLUMNS:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+            if col == "week_commencing":
+                df[col] = normalize_week_commencing(df[col], df["eta"])
+            else:
+                df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
 
     # Standardize requested month as text.
     if "requested_month" in df.columns:
         df["requested_month"] = df["requested_month"].astype("string").str.replace(".0", "", regex=False)
+
+    # Create a controlled mock status mix for demo-ready reporting.
+    # Source workbook only contains Open Order, which makes coverage 0%.
+    # The MVP needs Booked/Shipped, Available and Open Order to demonstrate coverage logic.
+    if "status" in df.columns:
+        df = df.sort_values("source_row_number").reset_index(drop=True)
+
+        total_rows = len(df)
+        booked_cutoff = int(total_rows * 0.25)
+        available_cutoff = int(total_rows * 0.40)
+
+        df.loc[: booked_cutoff - 1, "status"] = "Booked/Shipped"
+        df.loc[booked_cutoff: available_cutoff - 1, "status"] = "Available"
+        df.loc[available_cutoff:, "status"] = "Open Order"
+
+    # For available records, create available wholesale from confirmed wholesale
+    # when the source available value is empty or zero.
+    if "available_wholesale" in df.columns and "confirmed_wholesale" in df.columns:
+        available_mask = df["status"].astype(str).str.strip().eq("Available")
+        empty_available = df["available_wholesale"].fillna(0).eq(0)
+        df.loc[available_mask & empty_available, "available_wholesale"] = (
+            df.loc[available_mask & empty_available, "confirmed_wholesale"] * 0.95
+        )
 
     # Add report value for easier aggregation.
     def report_value(row):
