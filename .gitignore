@@ -11,3 +11,4 @@ data/**/*.csv
 data/profiles/*.txt
 credentials/
 token.json
+reports/*.xlsx

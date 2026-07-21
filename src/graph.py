@@ -7,6 +7,7 @@ from src.state import CoverageState
 from src.tools.pinecone_tool import retrieve_reporting_rules
 from src.tools.supabase_tool import query_orderbook
 from src.agent import run_react_analysis
+from src.services.report_builder import export_report_to_excel
 
 
 def add_error(state: CoverageState, message: str) -> CoverageState:
@@ -109,6 +110,17 @@ def generate_observations_node(state: CoverageState) -> CoverageState:
         state["status"] = "completed_local"
         return state
 
+def export_local_report_node(state: CoverageState) -> CoverageState:
+    try:
+        output_path = export_report_to_excel(
+            report_data=state["report_data"],
+            observations=state.get("observations", []),
+        )
+        state["report_url"] = str(output_path)
+        state["status"] = "completed_local"
+        return state
+    except Exception as exc:
+        return add_error(state, f"Failed to export local report: {exc}")
 
 def should_continue(state: CoverageState) -> str:
     if state.get("status") == "failed":
@@ -125,6 +137,7 @@ def build_graph():
     graph.add_node("calculate_report", calculate_report_node)
     graph.add_node("validate_report", validate_report_node)
     graph.add_node("generate_observations", generate_observations_node)
+    graph.add_node("export_local_report", export_local_report_node)
 
     graph.set_entry_point("validate_input")
 
@@ -173,7 +186,16 @@ def build_graph():
         },
     )
 
-    graph.add_edge("generate_observations", END)
+    graph.add_conditional_edges(
+        "generate_observations",
+        should_continue,
+        {
+            "continue": "export_local_report",
+            "failed": END,
+        },
+    )
+
+    graph.add_edge("export_local_report", END)
 
     return graph.compile()
 
@@ -216,3 +238,7 @@ if __name__ == "__main__":
     print("RAG sources:")
     for rule in final_state["reporting_rules"]:
         print(f"- {rule['title']} | {rule['source']} | score={rule['score']}")
+    
+    print("")
+    print("Report file:")
+    print(final_state.get("report_url"))
