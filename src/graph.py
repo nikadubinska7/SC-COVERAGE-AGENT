@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
+from src.agent import run_react_analysis
+from src.services.report_builder import export_report_to_excel
 from src.services.transformations import build_coverage_report
 from src.state import CoverageState
 from src.tools.pinecone_tool import retrieve_reporting_rules
 from src.tools.supabase_tool import query_orderbook
-from src.agent import run_react_analysis
-from src.services.report_builder import export_report_to_excel
 
 
 def add_error(state: CoverageState, message: str) -> CoverageState:
@@ -39,7 +39,7 @@ def retrieve_rules_node(state: CoverageState) -> CoverageState:
     try:
         query = state.get(
             "rules_query",
-            "How is SC coverage calculated, which statuses are included, and how is validation performed?",
+            "How is SC coverage calculated, which statuses are included, and how are value and volume validated?",
         )
         state["reporting_rules"] = retrieve_reporting_rules(query=query, top_k=3)
         state["status"] = "rules_retrieved"
@@ -94,21 +94,26 @@ def generate_observations_node(state: CoverageState) -> CoverageState:
     try:
         observations = run_react_analysis(state["report_data"])
         state["observations"] = observations
-        state["status"] = "completed_local"
+        state["status"] = "observations_generated"
         return state
     except Exception as exc:
-        summary = state.get("report_data", {}).get("executive_summary", {})
-        coverage_pct = summary.get("coverage_percentage", 0) * 100
+        summary = state["report_data"]["executive_summary"]
+
+        value_coverage_pct = summary["value_coverage_percentage"] * 100
+        volume_coverage_pct = summary["volume_coverage_percentage"] * 100
 
         state["observations"] = [
-            f"Total report value is {summary.get('total_value', 0):,.2f}.",
-            f"Coverage is {coverage_pct:.1f}% based on Booked/Shipped plus Available value.",
-            f"Open order exposure is {summary.get('open_order_value', 0):,.2f}.",
-            f"Included seasons: {', '.join(summary.get('seasons', []))}.",
+            f"Total report value is {summary['total_value']:,.0f}.",
+            f"Total report volume is {summary['total_volume']:,.0f}.",
+            f"Value coverage is {value_coverage_pct:.1f}% based on Booked/Shipped plus Available value.",
+            f"Volume coverage is {volume_coverage_pct:.1f}% based on Booked/Shipped plus Available volume.",
+            f"Open order exposure is {summary['open_order_value']:,.0f} value and {summary['open_order_volume']:,.0f} units.",
+            f"Included seasons: {', '.join(summary['seasons'])}.",
             f"ReAct observation generation failed; fallback deterministic observations used. Error: {exc}",
         ]
-        state["status"] = "completed_local"
+        state["status"] = "observations_generated"
         return state
+
 
 def export_local_report_node(state: CoverageState) -> CoverageState:
     try:
@@ -121,6 +126,7 @@ def export_local_report_node(state: CoverageState) -> CoverageState:
         return state
     except Exception as exc:
         return add_error(state, f"Failed to export local report: {exc}")
+
 
 def should_continue(state: CoverageState) -> str:
     if state.get("status") == "failed":
@@ -207,7 +213,7 @@ if __name__ == "__main__":
         "banner": "Snipes",
         "seasons": ["HO2026", "SP2027"],
         "order_type": "Standard Order - Futures",
-        "reporting_date": "2026-07-21",
+        "reporting_date": "2026-07-23",
         "recipient_email": "demo@example.com",
         "errors": [],
     }
@@ -231,14 +237,14 @@ if __name__ == "__main__":
 
     print("")
     print("Observations:")
-    for observation in final_state["observations"]:
+    for observation in final_state.get("observations", []):
         print(f"- {observation}")
 
     print("")
     print("RAG sources:")
-    for rule in final_state["reporting_rules"]:
+    for rule in final_state.get("reporting_rules", []):
         print(f"- {rule['title']} | {rule['source']} | score={rule['score']}")
-    
+
     print("")
     print("Report file:")
     print(final_state.get("report_url"))

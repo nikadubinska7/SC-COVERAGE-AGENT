@@ -3,6 +3,8 @@ pandas
 openpyxl
 pydantic
 pytest
+streamlit
+plotly
 
 langchain
 langchain-openai

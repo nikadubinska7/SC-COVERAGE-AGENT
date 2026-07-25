@@ -15,14 +15,27 @@ def summarize_coverage_result(executive_summary: dict[str, Any]) -> str:
     Summarize the executive summary of the coverage report.
     """
     total_value = executive_summary.get("total_value", 0)
-    coverage_percentage = executive_summary.get("coverage_percentage", 0) * 100
+    total_volume = executive_summary.get("total_volume", 0)
+
+    value_coverage_percentage = executive_summary.get(
+        "value_coverage_percentage", 0
+    ) * 100
+    volume_coverage_percentage = executive_summary.get(
+        "volume_coverage_percentage", 0
+    ) * 100
+
     open_order_value = executive_summary.get("open_order_value", 0)
+    open_order_volume = executive_summary.get("open_order_volume", 0)
+
     seasons = executive_summary.get("seasons", [])
 
     return (
-        f"Total report value: {total_value:,.2f}. "
-        f"Coverage percentage: {coverage_percentage:.1f}%. "
-        f"Open order exposure: {open_order_value:,.2f}. "
+        f"Total report value: {total_value:,.0f}. "
+        f"Total report volume: {total_volume:,.0f}. "
+        f"Value coverage percentage: {value_coverage_percentage:.1f}%. "
+        f"Volume coverage percentage: {volume_coverage_percentage:.1f}%. "
+        f"Open order value exposure: {open_order_value:,.0f}. "
+        f"Open order volume exposure: {open_order_volume:,.0f}. "
         f"Included seasons: {', '.join(seasons)}."
     )
 
@@ -30,40 +43,54 @@ def summarize_coverage_result(executive_summary: dict[str, Any]) -> str:
 @tool
 def evaluate_coverage_risk(executive_summary: dict[str, Any]) -> str:
     """
-    Evaluate supply-chain coverage risk based on coverage percentage and open order exposure.
+    Evaluate supply-chain coverage risk based on value and volume coverage.
     """
-    coverage_percentage = executive_summary.get("coverage_percentage", 0)
+    value_coverage_percentage = executive_summary.get("value_coverage_percentage", 0)
+    volume_coverage_percentage = executive_summary.get("volume_coverage_percentage", 0)
     open_order_value = executive_summary.get("open_order_value", 0)
+    open_order_volume = executive_summary.get("open_order_volume", 0)
 
-    if coverage_percentage >= 0.75:
-        risk = "Low"
-    elif coverage_percentage >= 0.5:
-        risk = "Medium"
-    else:
-        risk = "High"
+    risk_level = executive_summary.get("risk_level")
+
+    if not risk_level:
+        if value_coverage_percentage >= 0.75:
+            risk_level = "Low"
+        elif value_coverage_percentage >= 0.5:
+            risk_level = "Medium"
+        else:
+            risk_level = "High"
 
     return (
-        f"Risk level: {risk}. "
-        f"Coverage is {coverage_percentage * 100:.1f}% and open order exposure is {open_order_value:,.2f}."
+        f"Risk level: {risk_level}. "
+        f"Value coverage is {value_coverage_percentage * 100:.1f}%. "
+        f"Volume coverage is {volume_coverage_percentage * 100:.1f}%. "
+        f"Open order value exposure is {open_order_value:,.0f}. "
+        f"Open order volume exposure is {open_order_volume:,.0f}."
     )
 
 
 @tool
 def check_validation_status(validation_results: dict[str, Any]) -> str:
     """
-    Check whether the report passed validation and reconciliation.
+    Check whether the report passed value and volume validation and reconciliation.
     """
     passes = validation_results.get("passes_reconciliation")
-    difference = validation_results.get("difference")
+    value_difference = validation_results.get("value_difference")
+    volume_difference = validation_results.get("volume_difference")
     unexpected_statuses = validation_results.get("unexpected_statuses", [])
 
     if passes and not unexpected_statuses:
-        return f"Validation passed. Reconciliation difference is {difference}."
+        return (
+            "Validation passed. "
+            f"Value reconciliation difference is {value_difference}. "
+            f"Volume reconciliation difference is {volume_difference}."
+        )
 
     return (
-        f"Validation issue detected. "
+        "Validation issue detected. "
         f"Passes reconciliation: {passes}. "
-        f"Difference: {difference}. "
+        f"Value difference: {value_difference}. "
+        f"Volume difference: {volume_difference}. "
         f"Unexpected statuses: {unexpected_statuses}."
     )
 
@@ -106,8 +133,10 @@ Rules:
 - Use the available tools before writing the final answer.
 - Do not calculate totals yourself.
 - Do not invent data.
+- Discuss both value and volume.
 - Focus on coverage, open-order risk, season scope, and validation status.
 - Return only the observations as short bullet points.
+- Do not return empty bullets.
 
 Executive summary:
 {executive_summary}
@@ -126,11 +155,11 @@ Validation results:
 
     final_message = result["messages"][-1].content
 
-    observations = [
-        line.strip("- ").strip()
-        for line in final_message.splitlines()
-        if line.strip()
-    ]
+    observations = []
+    for line in final_message.splitlines():
+        clean_line = line.strip().strip("-").strip()
+        if clean_line:
+            observations.append(clean_line)
 
     return observations
 
@@ -143,12 +172,20 @@ if __name__ == "__main__":
             "available_value": 19203944.9,
             "open_order_value": 90018705.41,
             "covered_value": 59329059.25,
-            "coverage_percentage": 0.3973,
+            "value_coverage_percentage": 0.3973,
+            "total_volume": 2869524,
+            "booked_shipped_volume": 790388,
+            "available_volume": 375151,
+            "open_order_volume": 1703985,
+            "covered_volume": 1165539,
+            "volume_coverage_percentage": 0.4062,
+            "risk_level": "High",
             "seasons": ["HO2026", "SP2027"],
         },
         "validation": {
             "passes_reconciliation": True,
-            "difference": 0.0,
+            "value_difference": 0.0,
+            "volume_difference": 0.0,
             "unexpected_statuses": [],
         },
     }
