@@ -5,6 +5,7 @@ pydantic
 pytest
 streamlit
 plotly
+dash
 
 langchain
 langchain-openai

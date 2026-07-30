@@ -1,0 +1,1088 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Any
+
+import pandas as pd
+import plotly.graph_objects as go
+from dash import Dash, Input, Output, dash_table, dcc, html
+
+from src.services.dashboard_data import (
+    DEFAULT_BANNER,
+    DEFAULT_ORDER_TYPE,
+    DEFAULT_SEASONS,
+    apply_dashboard_filters,
+    build_filter_options,
+    load_orderbook_records,
+    records_to_filter_dataframe,
+)
+from src.services.transformations import build_coverage_report
+
+
+FILTER_CONFIG = [
+    ("season", "Season"),
+    ("requested_month", "Requested Month"),
+    ("brand", "Brand"),
+    ("category", "Category"),
+    ("sub_category", "Sub Category"),
+    ("gender", "Gender"),
+    ("age_division", "Age Division"),
+    ("timing_bucket", "Timing Bucket"),
+    ("status", "Status"),
+]
+
+# Validated categorical palette, fixed order (dataviz skill palette.md).
+CATEGORICAL_COLORS = [
+    "#2a78d6",  # blue
+    "#eb6834",  # orange
+    "#1baf7a",  # aqua
+    "#eda100",  # yellow
+    "#e87ba4",  # magenta
+    "#008300",  # green
+    "#4a3aa7",  # violet
+    "#e34948",  # red
+]
+
+# Fixed status scale — reserved meaning, never reused for series identity.
+STATUS_COLORS = {
+    "good": "#0ca30c",
+    "warning": "#fab219",
+    "serious": "#ec835a",
+    "critical": "#d03b3b",
+    "muted": "#898781",
+}
+
+RISK_COLORS = {
+    "Low": STATUS_COLORS["good"],
+    "Medium": STATUS_COLORS["warning"],
+    "High": STATUS_COLORS["critical"],
+    "N/A": STATUS_COLORS["muted"],
+}
+
+# Coverage mix reflects state (secured -> exposed), so it borrows status semantics.
+STATUS_MIX_COLORS = {
+    "Booked/Shipped": STATUS_COLORS["good"],
+    "Available": CATEGORICAL_COLORS[0],
+    "Open Order": STATUS_COLORS["warning"],
+}
+
+# Timing buckets are ordinal (on-time -> increasingly late): one hue, light -> dark.
+TIMING_RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"]
+
+# Sequential ramp for the exposure heatmap (magnitude, light -> dark).
+SEQUENTIAL_BLUE = [
+    (0.0, "#f4f8fd"),
+    (0.15, "#cde2fb"),
+    (0.35, "#9ec5f4"),
+    (0.55, "#5598e7"),
+    (0.75, "#256abf"),
+    (1.0, "#0d366b"),
+]
+
+# Chart chrome (light, executive theme).
+INK_PRIMARY = "#0b0b0b"
+INK_SECONDARY = "#52514e"
+INK_MUTED = "#898781"
+GRIDLINE = "#e5e4dd"
+AXIS_LINE = "#c3c2b7"
+FONT_STACK = "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif"
+
+
+def metric_columns(metric_mode: str) -> dict[str, str]:
+    prefix = "value" if metric_mode == "Value" else "volume"
+    return {
+        "prefix": prefix,
+        "label": metric_mode,
+        "total": f"total_{prefix}",
+        "booked": f"booked_shipped_{prefix}",
+        "available": f"available_{prefix}",
+        "open": f"open_order_{prefix}",
+        "covered": f"covered_{prefix}",
+        "coverage_pct": f"{prefix}_coverage_percentage",
+        "open_pct": f"open_order_{prefix}_percentage",
+        "late_pct": f"late_open_order_{prefix}_percentage",
+        "late_open": f"late_open_order_{prefix}",
+    }
+
+
+def format_number(value: Any, metric_mode: str | None = None) -> str:
+    number = float(value or 0)
+
+    if metric_mode == "Value":
+        if abs(number) >= 1_000_000:
+            return f"${number / 1_000_000:,.1f}M"
+        if abs(number) >= 1_000:
+            return f"${number / 1_000:,.1f}K"
+        return f"${number:,.0f}"
+
+    if abs(number) >= 1_000_000:
+        return f"{number / 1_000_000:,.1f}M"
+    if abs(number) >= 1_000:
+        return f"{number / 1_000:,.1f}K"
+    return f"{number:,.0f}"
+
+
+def format_pct(value: Any) -> str:
+    return f"{float(value or 0):.1%}"
+
+
+def safe_ratio(numerator: Any, denominator: Any) -> float:
+    denominator_value = float(denominator or 0)
+    if denominator_value == 0:
+        return 0.0
+    return float(numerator or 0) / denominator_value
+
+
+def filter_values_to_dict(**filters: list[str] | None) -> dict[str, list[str]]:
+    return {key: value or [] for key, value in filters.items()}
+
+
+@lru_cache(maxsize=2)
+def load_base_dataframe(refresh_token: int = 0) -> pd.DataFrame:
+    records = load_orderbook_records(
+        banner=DEFAULT_BANNER,
+        seasons=DEFAULT_SEASONS,
+        order_type=DEFAULT_ORDER_TYPE,
+    )
+    return records_to_filter_dataframe(records)
+
+
+def get_filter_options() -> dict[str, list[str]]:
+    try:
+        return build_filter_options(load_base_dataframe())
+    except Exception:
+        return {column: [] for column, _label in FILTER_CONFIG}
+
+
+def make_options(values: list[str]) -> list[dict[str, str]]:
+    return [{"label": value, "value": value} for value in values]
+
+
+def empty_figure(message: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font=dict(size=13, color=INK_MUTED),
+    )
+    return polish_figure(fig, height=300)
+
+
+def polish_figure(fig: go.Figure, height: int = 330) -> go.Figure:
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=48, r=20, t=40, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT_STACK, size=12, color=INK_SECONDARY),
+        title=dict(font=dict(size=12, color=INK_MUTED), x=0, xanchor="left"),
+        legend=dict(
+            orientation="h",
+            y=1.12,
+            x=0,
+            xanchor="left",
+            font=dict(size=11, color=INK_SECONDARY),
+        ),
+        hoverlabel=dict(
+            bgcolor="#ffffff",
+            bordercolor=GRIDLINE,
+            font=dict(color=INK_PRIMARY, size=12, family=FONT_STACK),
+        ),
+    )
+    fig.update_xaxes(
+        showgrid=False,
+        linecolor=AXIS_LINE,
+        tickfont=dict(color=INK_MUTED, size=11),
+        title_font=dict(color=INK_SECONDARY, size=11),
+    )
+    fig.update_yaxes(
+        gridcolor=GRIDLINE,
+        linecolor=AXIS_LINE,
+        zeroline=False,
+        tickfont=dict(color=INK_MUTED, size=11),
+        title_font=dict(color=INK_SECONDARY, size=11),
+    )
+    return fig
+
+
+def make_gauge(title: str, value: float, color: str) -> go.Figure:
+    pct = max(0, min(value * 100, 100))
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=pct,
+            domain={"x": [0.08, 0.92], "y": [0, 1]},
+            number={"suffix": "%", "font": {"size": 30, "color": INK_PRIMARY}},
+            title={"text": title, "font": {"size": 12, "color": INK_MUTED}},
+            gauge={
+                "axis": {
+                    "range": [0, 100],
+                    "tickvals": [0, 50, 100],
+                    "tickwidth": 0,
+                    "tickcolor": GRIDLINE,
+                    "tickfont": {"color": INK_MUTED, "size": 10},
+                },
+                "bar": {"color": color, "thickness": 0.28},
+                "bgcolor": "#f4f4f2",
+                "borderwidth": 1,
+                "bordercolor": GRIDLINE,
+                "steps": [
+                    {"range": [0, 50], "color": "rgba(208,59,59,0.08)"},
+                    {"range": [50, 75], "color": "rgba(250,178,25,0.10)"},
+                    {"range": [75, 100], "color": "rgba(12,163,12,0.10)"},
+                ],
+            },
+        )
+    )
+    return polish_figure(fig, height=250)
+
+
+def clean_bar_chart(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    title: str,
+    y_title: str,
+    colors: list[str],
+    metric_mode: str | None = None,
+    percent_labels: bool = False,
+    height: int = 330,
+) -> go.Figure:
+    if df.empty:
+        return empty_figure("No data available")
+
+    labels = df[x_col].astype(str).tolist()
+    values = pd.to_numeric(df[y_col], errors="coerce").fillna(0).astype(float).tolist()
+    bar_colors = [colors[index % len(colors)] for index in range(len(labels))]
+    text = [f"{value:.1%}" if percent_labels else format_number(value, metric_mode) for value in values]
+    max_value = max(values) if values else 0
+
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=values,
+            marker=dict(color=bar_colors),
+            text=text,
+            textposition="outside",
+            textfont=dict(color=INK_PRIMARY, size=11),
+            width=0.5,
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        showlegend=False,
+        bargap=0.45,
+        yaxis=dict(
+            title=y_title,
+            range=[0, max_value * 1.22 if max_value else 1],
+            tickformat=".0%" if percent_labels else None,
+        ),
+    )
+    return polish_figure(fig, height=height)
+
+
+def make_heatmap(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    title: str,
+    metric_mode: str,
+    height: int = 330,
+) -> go.Figure:
+    if df.empty:
+        return empty_figure("No exposure data available")
+
+    pivot = df.pivot_table(index=y_col, columns=x_col, values=z_col, aggfunc="sum", fill_value=0)
+    pivot = pivot.reindex(sorted(pivot.columns, key=str), axis=1)
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=pivot.values,
+            x=pivot.columns.astype(str).tolist(),
+            y=pivot.index.astype(str).tolist(),
+            colorscale=SEQUENTIAL_BLUE,
+            colorbar=dict(
+                title=dict(text=metric_mode, font=dict(size=10, color=INK_MUTED)),
+                tickfont=dict(size=10, color=INK_MUTED),
+                thickness=12,
+                len=0.8,
+                outlinewidth=0,
+            ),
+            hovertemplate=f"%{{x}} · %{{y}}<br>Open {metric_mode}: %{{z:,.0f}}<extra></extra>",
+            xgap=2,
+            ygap=2,
+        )
+    )
+    fig.update_layout(title=title)
+    return polish_figure(fig, height=height)
+
+
+def metric_card(title: str, value: str, subtitle: str, tone: str) -> html.Div:
+    return html.Div(
+        [
+            html.Div(title, className="metric-title"),
+            html.Div(value, className="metric-value"),
+            html.Div(subtitle, className="metric-subtitle"),
+        ],
+        className=f"metric-card metric-{tone}",
+    )
+
+
+def panel(title: str, child: Any, class_name: str = "") -> html.Div:
+    return html.Div(
+        [
+            html.Div(title, className="panel-title"),
+            html.Div(child, className="panel-body"),
+        ],
+        className=f"panel {class_name}".strip(),
+    )
+
+
+def build_summary_table(report_data: dict[str, Any], metric_mode: str) -> list[dict[str, Any]]:
+    cols = metric_columns(metric_mode)
+    df = pd.DataFrame(report_data.get("coverage_summary", []))
+    if df.empty:
+        return []
+
+    table = df[
+        [
+            "season",
+            "requested_month",
+            cols["total"],
+            cols["covered"],
+            cols["open"],
+            cols["coverage_pct"],
+            cols["open_pct"],
+            "risk_level",
+        ]
+    ].copy()
+    table = table.sort_values(["season", "requested_month"])
+    table[cols["total"]] = table[cols["total"]].map(lambda value: format_number(value, metric_mode))
+    table[cols["covered"]] = table[cols["covered"]].map(lambda value: format_number(value, metric_mode))
+    table[cols["open"]] = table[cols["open"]].map(lambda value: format_number(value, metric_mode))
+    table[cols["coverage_pct"]] = table[cols["coverage_pct"]].map(format_pct)
+    table[cols["open_pct"]] = table[cols["open_pct"]].map(format_pct)
+    table = table.rename(
+        columns={
+            "season": "Season",
+            "requested_month": "Month",
+            cols["total"]: f"Total {metric_mode}",
+            cols["covered"]: f"Covered {metric_mode}",
+            cols["open"]: f"Open {metric_mode}",
+            cols["coverage_pct"]: "Coverage",
+            cols["open_pct"]: "Open %",
+            "risk_level": "Risk",
+        }
+    )
+    return table.to_dict("records")
+
+
+def build_insights(
+    report_data: dict[str, Any],
+    filtered_df: pd.DataFrame,
+    metric_mode: str,
+) -> list[str]:
+    summary = report_data["executive_summary"]
+    cols = metric_columns(metric_mode)
+    metric_value = "report_wholesale_value" if metric_mode == "Value" else "report_volume"
+    included = filtered_df[filtered_df["is_included"]].copy()
+    open_orders = included[included["status"] == "Open Order"].copy()
+
+    insights = [
+        (
+            f"{metric_mode} coverage is {format_pct(summary.get(cols['coverage_pct']))}; "
+            f"open exposure remains {format_number(summary.get(cols['open']), metric_mode)}."
+        ),
+        (
+            f"Risk level is {summary.get('risk_level', 'N/A')} across "
+            f"{summary.get('included_rows', 0):,} included rows."
+        ),
+    ]
+
+    if not open_orders.empty and "category" in open_orders:
+        category = (
+            open_orders.groupby("category", dropna=False)[metric_value]
+            .sum()
+            .sort_values(ascending=False)
+            .head(1)
+        )
+        if not category.empty:
+            insights.append(
+                f"Largest open exposure category is {category.index[0]} at "
+                f"{format_number(category.iloc[0], metric_mode)}."
+            )
+
+    timing = pd.DataFrame(report_data.get("timing_risk", []))
+    if not timing.empty and cols["late_pct"] in timing:
+        highest_late = timing.sort_values(cols["late_pct"], ascending=False).head(1)
+        if not highest_late.empty:
+            row = highest_late.iloc[0]
+            insights.append(
+                f"Highest late-risk period is {row['season']} / {row['requested_month']} "
+                f"at {format_pct(row[cols['late_pct']])} of open orders."
+            )
+
+    return insights
+
+
+def build_dashboard_content(
+    metric_mode: str,
+    selected_filters: dict[str, list[str]],
+    refresh_token: int,
+) -> tuple[list[Any], list[Any], go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, list[dict[str, Any]], list[dict[str, Any]]]:
+    base_df = load_base_dataframe(refresh_token)
+    filtered_df = apply_dashboard_filters(base_df, selected_filters)
+
+    if filtered_df.empty:
+        empty = empty_figure("No rows match the selected filters")
+        return [], [], empty, empty, empty, empty, empty, [], []
+
+    report_data = build_coverage_report(filtered_df.to_dict("records"))
+    summary = report_data["executive_summary"]
+    cols = metric_columns(metric_mode)
+
+    open_pct = safe_ratio(summary.get(cols["open"]), summary.get(cols["total"]))
+    validation = report_data.get("validation", {})
+    validation_text = "PASS" if validation.get("passes_reconciliation") else "CHECK"
+    validation_tone = "green" if validation_text == "PASS" else "red"
+
+    cards = [
+        metric_card("Total Demand", format_number(summary.get(cols["total"]), metric_mode), f"{summary.get('included_rows', 0):,} included rows", "blue"),
+        metric_card("Covered", format_number(summary.get(cols["covered"]), metric_mode), "Booked/Shipped + Available", "green"),
+        metric_card("Coverage", format_pct(summary.get(cols["coverage_pct"])), f"{metric_mode.lower()} basis", "violet"),
+        metric_card("Open Exposure", format_number(summary.get(cols["open"]), metric_mode), f"{format_pct(open_pct)} of demand", "amber"),
+        metric_card("Validation", validation_text, f"{summary.get('cancelled_rows', 0):,} cancelled rows excluded", validation_tone),
+    ]
+
+    insights = [
+        html.Div(insight, className="insight-item")
+        for insight in build_insights(report_data, filtered_df, metric_mode)
+    ]
+
+    status_df = pd.DataFrame(
+        [
+            ("Booked/Shipped", summary.get(cols["booked"], 0)),
+            ("Available", summary.get(cols["available"], 0)),
+            ("Open Order", summary.get(cols["open"], 0)),
+        ],
+        columns=["Status", metric_mode],
+    )
+    status_fig = clean_bar_chart(
+        status_df,
+        "Status",
+        metric_mode,
+        "Coverage Mix by Status",
+        metric_mode,
+        [STATUS_MIX_COLORS["Booked/Shipped"], STATUS_MIX_COLORS["Available"], STATUS_MIX_COLORS["Open Order"]],
+        metric_mode=metric_mode,
+    )
+
+    gauge_fig = make_gauge(
+        f"{metric_mode} Coverage",
+        float(summary.get(cols["coverage_pct"], 0) or 0),
+        RISK_COLORS.get(summary.get("risk_level", "N/A"), STATUS_COLORS["muted"]),
+    )
+
+    coverage_summary = pd.DataFrame(report_data.get("coverage_summary", []))
+    if coverage_summary.empty:
+        trend_fig = empty_figure("No trend data")
+        season_fig = empty_figure("No season data")
+    else:
+        trend_df = (
+            coverage_summary.groupby("requested_month", as_index=False)
+            .agg(coverage_pct=(cols["coverage_pct"], "mean"), open_exposure=(cols["open"], "sum"))
+            .sort_values("requested_month")
+        )
+        trend_fig = go.Figure()
+        trend_fig.add_trace(
+            go.Scatter(
+                x=trend_df["requested_month"],
+                y=trend_df["coverage_pct"],
+                mode="lines+markers",
+                name="Coverage",
+                line=dict(color=CATEGORICAL_COLORS[0], width=2, shape="spline"),
+                marker=dict(size=8, color=CATEGORICAL_COLORS[0], line=dict(color="#ffffff", width=2)),
+                fill="tozeroy",
+                fillcolor="rgba(42, 120, 214, 0.10)",
+                hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+            )
+        )
+        trend_fig.update_layout(
+            title=f"Monthly Coverage Trend ({metric_mode})",
+            yaxis_tickformat=".0%",
+            yaxis_title="Coverage",
+            showlegend=False,
+        )
+        trend_fig = polish_figure(trend_fig, height=330)
+
+        season_df = (
+            coverage_summary.groupby(["season", "requested_month"], as_index=False)
+            .agg(open_exposure=(cols["open"], "sum"))
+            .sort_values("open_exposure", ascending=False)
+        )
+        season_fig = make_heatmap(
+            season_df,
+            "requested_month",
+            "season",
+            "open_exposure",
+            f"Open Exposure by Season & Month ({metric_mode})",
+            metric_mode,
+        )
+
+    timing = pd.DataFrame(report_data.get("timing_risk", []))
+    if timing.empty:
+        timing_fig = empty_figure("No open order timing risk")
+    else:
+        timing_cols = [
+            ("Early/On Time", f"early_on_time_{cols['prefix']}"),
+            ("+1 week", f"plus_1_week_{cols['prefix']}"),
+            ("+2 weeks", f"plus_2_weeks_{cols['prefix']}"),
+            ("+3 weeks", f"plus_3_weeks_{cols['prefix']}"),
+            ("+4 weeks", f"plus_4_weeks_or_later_{cols['prefix']}"),
+        ]
+        timing_df = pd.DataFrame(
+            [{"Bucket": label, metric_mode: timing.get(column, pd.Series(dtype=float)).sum()} for label, column in timing_cols]
+        )
+        timing_fig = clean_bar_chart(
+            timing_df,
+            "Bucket",
+            metric_mode,
+            f"Open Timing Exposure ({metric_mode})",
+            metric_mode,
+            TIMING_RAMP,
+            metric_mode=metric_mode,
+        )
+
+    top_open_records = []
+    open_df = filtered_df[filtered_df["status"] == "Open Order"].copy()
+    if not open_df.empty:
+        metric_field = "report_wholesale_value" if metric_mode == "Value" else "report_volume"
+        group_cols = [column for column in ["category", "sub_category", "gender"] if column in open_df.columns]
+        if group_cols:
+            top_open = (
+                open_df.groupby(group_cols, dropna=False)
+                .agg(Open=(metric_field, "sum"), Rows=("source_row_number", "count"))
+                .reset_index()
+                .sort_values("Open", ascending=False)
+                .head(10)
+            )
+            top_open["Open"] = top_open["Open"].map(lambda value: format_number(value, metric_mode))
+            top_open_records = top_open.to_dict("records")
+
+    return (
+        cards,
+        insights,
+        status_fig,
+        gauge_fig,
+        trend_fig,
+        season_fig,
+        timing_fig,
+        build_summary_table(report_data, metric_mode),
+        top_open_records,
+    )
+
+
+filter_options = get_filter_options()
+
+app = Dash(__name__, title="SC Coverage Executive Dashboard")
+server = app.server
+
+app.index_string = """
+<!DOCTYPE html>
+<html>
+  <head>
+    {%metas%}
+    <title>{%title%}</title>
+    {%favicon%}
+    {%css%}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <style>
+      :root {
+        --page-bg: #f4f5f3;
+        --surface: #ffffff;
+        --surface-muted: #f7f7f5;
+        --ink-primary: #0b0b0b;
+        --ink-secondary: #52514e;
+        --ink-muted: #898781;
+        --border: rgba(11, 11, 11, 0.09);
+        --gridline: #e5e4dd;
+        --accent-blue: #2a78d6;
+        --accent-green: #0ca30c;
+        --accent-amber: #fab219;
+        --accent-violet: #4a3aa7;
+        --accent-red: #d03b3b;
+        --shadow: 0 1px 2px rgba(11, 11, 11, 0.05), 0 1px 1px rgba(11, 11, 11, 0.03);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--page-bg);
+        color: var(--ink-primary);
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      }
+      .app-shell {
+        max-width: 1900px;
+        margin: 0 auto;
+        padding: 20px 32px 32px;
+      }
+      .hero {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 16px;
+        margin-bottom: 18px;
+        border-bottom: 1px solid var(--border);
+      }
+      .hero-brand {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .hero-kicker {
+        color: var(--accent-blue);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .hero-title {
+        color: var(--ink-primary);
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .hero-subtitle {
+        color: var(--ink-muted);
+        font-size: 12px;
+        text-align: right;
+      }
+      .layout-grid {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+      }
+      .sidebar, .panel, .metric-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+      }
+      .sidebar {
+        grid-column: 1;
+        padding: 16px;
+        position: sticky;
+        top: 20px;
+      }
+      .dashboard-main {
+        grid-column: 2;
+        min-width: 0;
+      }
+      .sidebar-title {
+        color: var(--ink-primary);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding-bottom: 10px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .filter-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ink-muted);
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        margin: 12px 0 5px;
+      }
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .metric-card {
+        min-height: 100px;
+        padding: 14px 16px 12px;
+        position: relative;
+        border-top: 3px solid transparent;
+      }
+      .metric-blue   { border-top-color: var(--accent-blue); }
+      .metric-green  { border-top-color: var(--accent-green); }
+      .metric-violet { border-top-color: var(--accent-violet); }
+      .metric-amber  { border-top-color: var(--accent-amber); }
+      .metric-red    { border-top-color: var(--accent-red); }
+      .metric-title {
+        color: var(--ink-muted);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .metric-value {
+        color: var(--ink-primary);
+        font-size: 27px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        margin-top: 8px;
+      }
+      .metric-subtitle {
+        color: var(--ink-muted);
+        font-size: 11.5px;
+        margin-top: 4px;
+      }
+      .insight-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .insight-item {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent-blue);
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: var(--ink-secondary);
+        font-size: 12.5px;
+        line-height: 1.4;
+        box-shadow: var(--shadow);
+      }
+      .chart-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1.55fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .chart-grid .panel:nth-child(4) {
+        grid-column: span 2;
+      }
+      .panel {
+        overflow: hidden;
+        min-height: 0;
+      }
+      .panel-title {
+        color: var(--ink-secondary);
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        padding: 12px 14px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      .panel-body {
+        padding: 6px 8px 8px;
+      }
+      .tables-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+      button {
+        background: var(--surface);
+        color: var(--ink-primary);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        font-weight: 600;
+        font-size: 12px;
+        padding: 9px 10px;
+        width: 100%;
+        margin-top: 16px;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      button:hover {
+        background: var(--surface-muted);
+      }
+      .Select-control {
+        background: var(--surface) !important;
+        color: var(--ink-primary) !important;
+        border-color: var(--border) !important;
+        font-size: 12px;
+        border-radius: 6px !important;
+      }
+      .Select-menu-outer {
+        background: var(--surface) !important;
+        border-color: var(--border) !important;
+      }
+      .Select-value-label,
+      .Select-option,
+      .Select-placeholder {
+        color: var(--ink-primary) !important;
+        font-size: 12px;
+      }
+      .Select-option.is-focused {
+        background: var(--surface-muted) !important;
+      }
+      label {
+        color: var(--ink-secondary);
+        font-size: 12px;
+        margin-right: 10px;
+      }
+      @media (max-width: 1100px) {
+        .layout-grid, .chart-grid, .tables-grid, .insight-list {
+          grid-template-columns: 1fr;
+        }
+        .sidebar, .dashboard-main {
+          grid-column: auto;
+        }
+        .metric-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .sidebar {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    {%app_entry%}
+    <footer>
+      {%config%}
+      {%scripts%}
+      {%renderer%}
+    </footer>
+  </body>
+</html>
+"""
+
+
+def dropdown(column: str, label: str) -> html.Div:
+    return html.Div(
+        [
+            html.Div(label, className="filter-label"),
+            dcc.Dropdown(
+                id=f"filter-{column}",
+                options=make_options(filter_options.get(column, [])),
+                multi=True,
+                placeholder=f"All {label.lower()}",
+            ),
+        ]
+    )
+
+
+app.layout = html.Div(
+    [
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Div("SC Coverage", className="hero-kicker"),
+                        html.Div("Supply Chain Coverage Scorecard", className="hero-title"),
+                    ],
+                    className="hero-brand",
+                ),
+                html.Div("Snipes / Nike-Jordan futures", className="hero-subtitle"),
+            ],
+            className="hero",
+        ),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Div("Report Controls", className="sidebar-title"),
+                        html.Div("Metric View", className="filter-label"),
+                        dcc.RadioItems(
+                            id="metric-mode",
+                            options=[
+                                {"label": "Value", "value": "Value"},
+                                {"label": "Volume", "value": "Volume"},
+                            ],
+                            value="Value",
+                            inline=True,
+                        ),
+                        *[dropdown(column, label) for column, label in FILTER_CONFIG],
+                        html.Button("Refresh Data", id="refresh-data", n_clicks=0),
+                    ],
+                    className="sidebar",
+                ),
+                html.Div(
+                    [
+                        html.Div(id="metric-cards", className="metric-grid"),
+                        html.Div(id="insights", className="insight-list"),
+                        html.Div(
+                            [
+                                panel("Coverage Gauge", dcc.Graph(id="coverage-gauge")),
+                                panel("Coverage Mix", dcc.Graph(id="status-mix")),
+                                panel("Monthly Coverage Trend", dcc.Graph(id="coverage-trend")),
+                                panel("Season Exposure", dcc.Graph(id="season-exposure")),
+                                panel("Timing Risk", dcc.Graph(id="timing-risk")),
+                            ],
+                            className="chart-grid",
+                        ),
+                        html.Div(
+                            [
+                                panel(
+                                    "Coverage Summary",
+                                    dash_table.DataTable(
+                                        id="coverage-table",
+                                        page_size=10,
+                                        sort_action="native",
+                                        style_table={"overflowX": "auto"},
+                                        style_header={
+                                            "backgroundColor": "#f7f7f5",
+                                            "color": "#52514e",
+                                            "fontWeight": "700",
+                                            "fontSize": "11px",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.02em",
+                                            "border": "none",
+                                            "borderBottom": "1px solid #e5e4dd",
+                                        },
+                                        style_cell={
+                                            "fontFamily": "'Inter', 'Segoe UI', system-ui, sans-serif",
+                                            "fontSize": 12,
+                                            "padding": "9px 10px",
+                                            "border": "none",
+                                            "borderBottom": "1px solid #f0efec",
+                                            "backgroundColor": "#ffffff",
+                                            "color": "#0b0b0b",
+                                        },
+                                        style_data_conditional=[
+                                            {
+                                                "if": {"row_index": "odd"},
+                                                "backgroundColor": "#fafaf8",
+                                            }
+                                        ],
+                                    ),
+                                ),
+                                panel(
+                                    "Top Open Exceptions",
+                                    dash_table.DataTable(
+                                        id="exceptions-table",
+                                        page_size=10,
+                                        sort_action="native",
+                                        style_table={"overflowX": "auto"},
+                                        style_header={
+                                            "backgroundColor": "#f7f7f5",
+                                            "color": "#52514e",
+                                            "fontWeight": "700",
+                                            "fontSize": "11px",
+                                            "textTransform": "uppercase",
+                                            "letterSpacing": "0.02em",
+                                            "border": "none",
+                                            "borderBottom": "1px solid #e5e4dd",
+                                        },
+                                        style_cell={
+                                            "fontFamily": "'Inter', 'Segoe UI', system-ui, sans-serif",
+                                            "fontSize": 12,
+                                            "padding": "9px 10px",
+                                            "border": "none",
+                                            "borderBottom": "1px solid #f0efec",
+                                            "backgroundColor": "#ffffff",
+                                            "color": "#0b0b0b",
+                                        },
+                                        style_data_conditional=[
+                                            {
+                                                "if": {"row_index": "odd"},
+                                                "backgroundColor": "#fafaf8",
+                                            }
+                                        ],
+                                    ),
+                                ),
+                            ],
+                            className="tables-grid",
+                        ),
+                    ],
+                    className="dashboard-main",
+                ),
+            ],
+            className="layout-grid",
+        ),
+    ],
+    className="app-shell",
+)
+
+
+@app.callback(
+    Output("metric-cards", "children"),
+    Output("insights", "children"),
+    Output("status-mix", "figure"),
+    Output("coverage-gauge", "figure"),
+    Output("coverage-trend", "figure"),
+    Output("season-exposure", "figure"),
+    Output("timing-risk", "figure"),
+    Output("coverage-table", "data"),
+    Output("coverage-table", "columns"),
+    Output("exceptions-table", "data"),
+    Output("exceptions-table", "columns"),
+    Input("metric-mode", "value"),
+    Input("filter-season", "value"),
+    Input("filter-requested_month", "value"),
+    Input("filter-brand", "value"),
+    Input("filter-category", "value"),
+    Input("filter-sub_category", "value"),
+    Input("filter-gender", "value"),
+    Input("filter-age_division", "value"),
+    Input("filter-timing_bucket", "value"),
+    Input("filter-status", "value"),
+    Input("refresh-data", "n_clicks"),
+)
+def update_dashboard(
+    metric_mode: str,
+    season: list[str] | None,
+    requested_month: list[str] | None,
+    brand: list[str] | None,
+    category: list[str] | None,
+    sub_category: list[str] | None,
+    gender: list[str] | None,
+    age_division: list[str] | None,
+    timing_bucket: list[str] | None,
+    status: list[str] | None,
+    refresh_data_clicks: int,
+) -> tuple[Any, ...]:
+    if refresh_data_clicks:
+        load_base_dataframe.cache_clear()
+
+    selected_filters = filter_values_to_dict(
+        season=season,
+        requested_month=requested_month,
+        brand=brand,
+        category=category,
+        sub_category=sub_category,
+        gender=gender,
+        age_division=age_division,
+        timing_bucket=timing_bucket,
+        status=status,
+    )
+
+    (
+        cards,
+        insights,
+        status_fig,
+        gauge_fig,
+        trend_fig,
+        season_fig,
+        timing_fig,
+        summary_rows,
+        exception_rows,
+    ) = build_dashboard_content(metric_mode, selected_filters, refresh_data_clicks or 0)
+
+    summary_columns = [{"name": column, "id": column} for column in (summary_rows[0].keys() if summary_rows else [])]
+    exception_columns = [{"name": column, "id": column} for column in (exception_rows[0].keys() if exception_rows else [])]
+
+    return (
+        cards,
+        insights,
+        status_fig,
+        gauge_fig,
+        trend_fig,
+        season_fig,
+        timing_fig,
+        summary_rows,
+        summary_columns,
+        exception_rows,
+        exception_columns,
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=8050)

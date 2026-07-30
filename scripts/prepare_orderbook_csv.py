@@ -44,6 +44,12 @@ DATE_COLUMNS = [
     "order_entry_date",
     "customer_request_date",
     "customer_confirmed_date",
+    "launch_date",
+    "rejected_date",
+    "nike_eta",
+    "planned_delivery_date",
+    "first_possible_delivery_date_drs_method_only",
+    "planned_goods_issue_date",
 ]
 
 
@@ -104,6 +110,25 @@ def normalize_week_commencing(series: pd.Series, eta_series: pd.Series) -> pd.Se
     return pd.Series(dates, index=series.index)
 
 
+def normalize_date_series(series: pd.Series) -> pd.Series:
+    values = series.copy()
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    excel_serial_mask = numeric_values.between(20000, 60000)
+
+    parsed = pd.to_datetime(values, errors="coerce")
+
+    if excel_serial_mask.any():
+        parsed_excel = pd.to_datetime(
+            numeric_values.where(excel_serial_mask),
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce",
+        )
+        parsed = parsed.where(~excel_serial_mask, parsed_excel)
+
+    return parsed.dt.date
+
+
 def main():
     if not SOURCE_PATH.exists():
         raise FileNotFoundError(f"Source workbook not found: {SOURCE_PATH}")
@@ -143,25 +168,31 @@ def main():
             if col == "week_commencing":
                 df[col] = normalize_week_commencing(df[col], df["eta"])
             else:
-                df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+                df[col] = normalize_date_series(df[col])
 
     # Standardize requested month as text.
     if "requested_month" in df.columns:
         df["requested_month"] = df["requested_month"].astype("string").str.replace(".0", "", regex=False)
 
-    # Create a controlled mock status mix for demo-ready reporting.
-    # Source workbook only contains Open Order, which makes coverage 0%.
-    # The MVP needs Booked/Shipped, Available and Open Order to demonstrate coverage logic.
+    # Create a controlled mock status mix only for old demo workbooks where
+    # the source contains no differentiated status values.
     if "status" in df.columns:
-        df = df.sort_values("source_row_number").reset_index(drop=True)
+        source_statuses = {
+            str(status).strip()
+            for status in df["status"].dropna().unique().tolist()
+            if str(status).strip()
+        }
 
-        total_rows = len(df)
-        booked_cutoff = int(total_rows * 0.25)
-        available_cutoff = int(total_rows * 0.40)
+        if source_statuses == {"Open Order"}:
+            df = df.sort_values("source_row_number").reset_index(drop=True)
 
-        df.loc[: booked_cutoff - 1, "status"] = "Booked/Shipped"
-        df.loc[booked_cutoff: available_cutoff - 1, "status"] = "Available"
-        df.loc[available_cutoff:, "status"] = "Open Order"
+            total_rows = len(df)
+            booked_cutoff = int(total_rows * 0.25)
+            available_cutoff = int(total_rows * 0.40)
+
+            df.loc[: booked_cutoff - 1, "status"] = "Booked/Shipped"
+            df.loc[booked_cutoff: available_cutoff - 1, "status"] = "Available"
+            df.loc[available_cutoff:, "status"] = "Open Order"
 
     # For available records, create available wholesale from confirmed wholesale
     # when the source available value is empty or zero.
@@ -180,6 +211,58 @@ def main():
         return row.get("confirmed_wholesale", 0)
 
     df["report_wholesale_value"] = df.apply(report_value, axis=1)
+
+    def first_available_numeric(row, columns):
+        for col in columns:
+            if col in row:
+                value = pd.to_numeric(row.get(col), errors="coerce")
+                if pd.notna(value) and value != 0:
+                    return value
+        return 0
+
+    def report_volume(row):
+        status = str(row.get("status", "")).strip().lower()
+
+        if status == "booked/shipped":
+            return first_available_numeric(
+                row,
+                [
+                    "confirmed_quantity",
+                    "total_booked_quantity",
+                    "ordered_quantity",
+                ],
+            )
+
+        if status == "available":
+            return first_available_numeric(
+                row,
+                [
+                    "available_quantity",
+                    "ordered_quantity",
+                ],
+            )
+
+        if status == "open order":
+            return first_available_numeric(
+                row,
+                [
+                    "remaining_to_ship_quantity",
+                    "ordered_quantity",
+                    "confirmed_quantity",
+                ],
+            )
+
+        return first_available_numeric(
+            row,
+            [
+                "ordered_quantity",
+                "confirmed_quantity",
+                "available_quantity",
+                "remaining_to_ship_quantity",
+            ],
+        )
+
+    df["report_volume"] = df.apply(report_volume, axis=1)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_CSV, index=False)

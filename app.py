@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 from typing import Any
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from src.services.dashboard_data import (
@@ -28,22 +30,67 @@ st.set_page_config(
 
 
 STATUS_COLORS = {
-    "Booked/Shipped": "#16A34A",
-    "Available": "#2563EB",
-    "Open Order": "#DC2626",
-    "Early/On Time": "#16A34A",
-    "+1 week": "#F59E0B",
-    "+2 weeks": "#F59E0B",
-    "+3 weeks": "#DC2626",
-    "+4 weeks or later": "#991B1B",
-    "Unclassified Open Order": "#6B7280",
+    "Booked/Shipped": "#4C8F35",
+    "Available": "#069DC3",
+    "Open Order": "#E34A2C",
+    "Early/On Time": "#4C8F35",
+    "+1 week": "#C59A32",
+    "+2 weeks": "#D97706",
+    "+3 weeks": "#E34A2C",
+    "+4 weeks or later": "#6D3A8B",
+    "Unclassified Open Order": "#607080",
+}
+
+BRAND_COLORS = {
+    "forest": "#315F37",
+    "forest_2": "#2B6D2E",
+    "sage": "#9FCB93",
+    "sage_2": "#DCECCF",
+    "navy": "#193B5C",
+    "navy_2": "#0B5B7A",
+    "blue": "#069DC3",
+    "blue_2": "#8BD8EE",
+    "teal": "#12A8A6",
+    "green": "#4C8F35",
+    "green_2": "#A7E44B",
+    "gold": "#C59A32",
+    "orange": "#E67E00",
+    "red": "#B6172E",
+    "plum": "#6D3A8B",
+    "ink": "#172033",
+    "muted": "#657285",
+    "panel": "#FFFFFF",
+    "line": "#E1E6DD",
 }
 
 RISK_COLORS = {
-    "Low": "#16A34A",
-    "Medium": "#F59E0B",
-    "High": "#DC2626",
+    "Low": "#4C8F35",
+    "Medium": "#C59A32",
+    "High": "#B6172E",
 }
+
+SEASON_COLOR_SCALE = [
+    [0.0, "#C7F2FF"],
+    [0.35, "#22C7E8"],
+    [0.7, "#069DC3"],
+    [1.0, "#193B5C"],
+]
+
+EXPOSURE_COLOR_SCALE = [
+    [0.0, "#FFE0B8"],
+    [0.4, "#F59E0B"],
+    [0.75, "#E34A2C"],
+    [1.0, "#6D3A8B"],
+]
+
+CUBE_PALETTE = [
+    "#069DC3",
+    "#8A36C8",
+    "#E34A2C",
+    "#4C8F35",
+    "#C59A32",
+    "#0B5B7A",
+]
 
 
 def inject_css() -> None:
@@ -51,107 +98,229 @@ def inject_css() -> None:
         """
         <style>
         .stApp {
-            background: #f6f7f9;
-            color: #111827;
+            background:
+                linear-gradient(135deg, rgba(76,143,53,0.16) 0%, rgba(255,255,255,0.42) 34%, rgba(6,157,195,0.10) 68%, rgba(230,126,0,0.10) 100%),
+                repeating-linear-gradient(135deg, rgba(49,95,55,0.040) 0 1px, transparent 1px 34px),
+                #f3f5ef;
+            color: #172033;
         }
         [data-testid="stSidebar"] {
-            background: #ffffff;
-            border-right: 1px solid #e5e7eb;
+            background: linear-gradient(180deg, #ffffff 0%, #f7faf3 100%);
+            border-right: 1px solid #dfe8d7;
+        }
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color: #315f37;
         }
         .block-container {
-            padding-top: 1.6rem;
+            padding-top: 1.1rem;
             padding-bottom: 2.5rem;
+            max-width: 1440px;
         }
         .hero {
-            background: linear-gradient(135deg, #111827 0%, #1f2937 58%, #0f766e 100%);
+            background: linear-gradient(180deg, #4f8f3f 0%, #315f37 48%, #214627 100%);
             color: #ffffff;
-            padding: 26px 30px;
+            padding: 16px 22px 18px;
             border-radius: 8px;
             margin-bottom: 18px;
+            box-shadow:
+                0 18px 34px rgba(49,95,55,0.18),
+                inset 0 1px 0 rgba(255,255,255,0.30);
+            border: 1px solid rgba(255,255,255,0.16);
+            position: relative;
+            overflow: hidden;
+        }
+        .hero:before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(120deg, rgba(255,255,255,0.18), rgba(255,255,255,0) 42%),
+                repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0 1px, transparent 1px 78px);
+            pointer-events: none;
+        }
+        .hero-inner {
+            position: relative;
+            z-index: 1;
+        }
+        .hero-kicker {
+            color: #f4e3a5;
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            margin-bottom: 5px;
         }
         .hero-title {
-            font-size: 34px;
-            font-weight: 760;
+            font-size: 30px;
+            font-weight: 800;
             margin-bottom: 4px;
             letter-spacing: 0;
         }
         .hero-subtitle {
             font-size: 15px;
-            color: #d1d5db;
-            margin-bottom: 14px;
+            color: #eef6ea;
+            margin-bottom: 12px;
         }
         .hero-meta {
             display: flex;
             gap: 12px;
             flex-wrap: wrap;
             font-size: 13px;
-            color: #f3f4f6;
+            color: #f7faf3;
         }
         .meta-pill {
-            background: rgba(255,255,255,0.12);
-            border: 1px solid rgba(255,255,255,0.18);
-            border-radius: 999px;
-            padding: 6px 11px;
+            background: rgba(255,255,255,0.16);
+            border: 1px solid rgba(255,255,255,0.25);
+            border-radius: 6px;
+            padding: 6px 10px;
         }
         .kpi-card {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(246,248,242,0.98) 100%);
+            border: 1px solid #dfe8d7;
             border-radius: 8px;
-            padding: 18px 18px 16px;
-            min-height: 128px;
-            box-shadow: 0 8px 22px rgba(17,24,39,0.06);
+            padding: 15px 15px 13px;
+            min-height: 118px;
+            box-shadow:
+                0 14px 24px rgba(49,95,55,0.10),
+                inset 0 1px 0 rgba(255,255,255,0.92);
+            position: relative;
+            overflow: hidden;
+        }
+        .kpi-card:before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 7px;
+            background: linear-gradient(180deg, #5f8e57 0%, #315f37 100%);
+        }
+        .kpi-rose {
+            background: linear-gradient(180deg, #fff6f7 0%, #f3cad1 100%);
+        }
+        .kpi-rose:before {
+            background: linear-gradient(180deg, #d02a42 0%, #9e1730 100%);
+        }
+        .kpi-amber {
+            background: linear-gradient(180deg, #fff5e4 0%, #f1dfc9 100%);
+        }
+        .kpi-amber:before {
+            background: linear-gradient(180deg, #d7a94c 0%, #9b6d23 100%);
+        }
+        .kpi-lavender {
+            background: linear-gradient(180deg, #f7f1ff 0%, #dbcfeb 100%);
+        }
+        .kpi-lavender:before {
+            background: linear-gradient(180deg, #7b4fa0 0%, #4b2c69 100%);
+        }
+        .kpi-blue {
+            background: linear-gradient(180deg, #effaff 0%, #cce4f3 100%);
+        }
+        .kpi-blue:before {
+            background: linear-gradient(180deg, #0b7da7 0%, #064a6b 100%);
+        }
+        .kpi-sage {
+            background: linear-gradient(180deg, #f4ffe9 0%, #d8edc5 100%);
+        }
+        .kpi-sage:before {
+            background: linear-gradient(180deg, #6c9f43 0%, #315f37 100%);
         }
         .kpi-label {
-            color: #6b7280;
+            color: #738094;
             font-size: 12px;
-            font-weight: 700;
+            font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0;
             margin-bottom: 8px;
         }
         .kpi-value {
-            color: #111827;
-            font-size: 28px;
-            font-weight: 760;
+            color: #223047;
+            font-size: 27px;
+            font-weight: 800;
             line-height: 1.1;
             margin-bottom: 8px;
             overflow-wrap: anywhere;
         }
         .kpi-note {
-            color: #4b5563;
+            color: #738094;
             font-size: 13px;
             line-height: 1.35;
         }
         .badge {
             display: inline-block;
-            border-radius: 999px;
+            border-radius: 6px;
             color: #ffffff;
             font-size: 13px;
-            font-weight: 760;
+            font-weight: 800;
             padding: 6px 12px;
+        }
+        .panel-heading {
+            background: linear-gradient(180deg, #4f8f3f 0%, #315f37 52%, #214627 100%);
+            color: #ffffff;
+            border-radius: 8px 8px 0 0;
+            padding: 9px 13px;
+            font-size: 14px;
+            font-weight: 800;
+            margin-top: 8px;
+            border: 1px solid #4f7f4f;
+            border-bottom: 0;
+            box-shadow: 0 10px 18px rgba(49,95,55,0.12);
+        }
+        .panel-caption {
+            background: linear-gradient(180deg, #ffffff 0%, #f7faf3 100%);
+            border: 1px solid #dfe8d7;
+            border-top: 0;
+            color: #738094;
+            padding: 0 13px 10px;
+            margin-bottom: 4px;
+            font-size: 12px;
         }
         .section-card {
             background: #ffffff;
-            border: 1px solid #e5e7eb;
+            border: 1px solid #dfe8d7;
             border-radius: 8px;
             padding: 18px;
             margin-bottom: 16px;
-            box-shadow: 0 8px 22px rgba(17,24,39,0.04);
+            box-shadow: 0 10px 22px rgba(49,95,55,0.06);
         }
         .observation-card {
-            background: #ffffff;
-            border-left: 4px solid #0f766e;
+            background: linear-gradient(180deg, #ffffff 0%, #f7faf3 100%);
+            border-left: 5px solid #76aec4;
             border-radius: 8px;
             padding: 13px 15px;
             margin-bottom: 10px;
-            color: #111827;
-            box-shadow: 0 4px 14px rgba(17,24,39,0.04);
+            color: #223047;
+            box-shadow:
+                0 10px 18px rgba(49,95,55,0.07),
+                inset 0 1px 0 rgba(255,255,255,0.94);
         }
         div[data-testid="stMetric"] {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
+            background: linear-gradient(180deg, #ffffff 0%, #f7faf3 100%);
+            border: 1px solid #dfe8d7;
             border-radius: 8px;
             padding: 14px;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 6px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background: rgba(255,255,255,0.82);
+            border: 1px solid #dfe8d7;
+            border-radius: 7px 7px 0 0;
+            padding: 8px 12px;
+            color: #223047;
+            font-weight: 700;
+        }
+        .stTabs [aria-selected="true"] {
+            background: linear-gradient(180deg, #5f8e57 0%, #315f37 100%);
+            color: #ffffff;
+            border-color: #4f7f4f;
+        }
+        h2, h3 {
+            color: #315f37;
+            letter-spacing: 0;
         }
         </style>
         """,
@@ -165,7 +334,7 @@ def fmt_number(value: Any, metric_mode: str | None = None) -> str:
 
     number = float(value)
     if metric_mode == "Value":
-        return f"{number:,.0f}"
+        return f"${number:,.0f}"
     return f"{number:,.0f}"
 
 
@@ -203,7 +372,207 @@ def selected_metric_columns(metric_mode: str) -> dict[str, str]:
 
 
 def status_badge(text: str, color: str) -> str:
-    return f'<span class="badge" style="background:{color};">{text}</span>'
+    return f'<span class="badge" style="background:{color};">{escape(text)}</span>'
+
+
+def panel_heading(title: str, caption: str | None = None) -> None:
+    st.markdown(
+        f'<div class="panel-heading">{escape(title)}</div>',
+        unsafe_allow_html=True,
+    )
+    if caption:
+        st.markdown(
+            f'<div class="panel-caption">{escape(caption)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def style_plotly_chart(fig: go.Figure, height: int = 315) -> go.Figure:
+    fig.update_layout(
+        template="plotly_white",
+        height=height,
+        margin=dict(l=28, r=18, t=38, b=40),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FBFCF7",
+        font=dict(color=BRAND_COLORS["ink"], family="Arial, sans-serif", size=12),
+        title=dict(font=dict(size=14, color=BRAND_COLORS["forest"]), x=0.02, xanchor="left"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+    )
+    fig.update_xaxes(showgrid=False, linecolor=BRAND_COLORS["line"])
+    fig.update_yaxes(gridcolor="#EEF1E8", linecolor=BRAND_COLORS["line"])
+    return fig
+
+
+def add_raised_bar_style(fig: go.Figure) -> go.Figure:
+    fig.update_traces(
+        marker_line_color="rgba(49, 95, 55, 0.24)",
+        marker_line_width=0.9,
+        opacity=0.88,
+        selector={"type": "bar"},
+    )
+    return fig
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    value = color.lstrip("#")
+    return tuple(int(value[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def shade_hex(color: str, factor: float) -> str:
+    red, green, blue = hex_to_rgb(color)
+    return (
+        f"#{max(0, min(255, int(red * factor))):02x}"
+        f"{max(0, min(255, int(green * factor))):02x}"
+        f"{max(0, min(255, int(blue * factor))):02x}"
+    )
+
+
+def make_3d_block_chart(
+    df: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+    title: str,
+    y_title: str,
+    text_format: str = "number",
+    colors: list[str] | None = None,
+    y_tickformat: str | None = None,
+    height: int = 315,
+) -> go.Figure:
+    if df.empty:
+        return go.Figure()
+
+    values = [float(value or 0) for value in df[y_column].tolist()]
+    labels = [str(value) for value in df[x_column].tolist()]
+    max_value = max(values) if values else 0
+    y_padding = max_value * 0.22 if max_value else 1
+    y_max = max_value + y_padding
+    dx = 0.11
+    dy = y_max * 0.055
+    bar_width = 0.58
+    palette = colors or CUBE_PALETTE
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=list(range(len(labels))),
+            y=[0 for _ in labels],
+            mode="markers",
+            marker=dict(opacity=0),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    for index, (label, value) in enumerate(zip(labels, values)):
+        color = palette[index % len(palette)]
+        left = index - bar_width / 2
+        right = index + bar_width / 2
+        top = value
+
+        fig.add_shape(
+            type="rect",
+            x0=left,
+            x1=right,
+            y0=0,
+            y1=top,
+            fillcolor=color,
+            line=dict(color=shade_hex(color, 0.72), width=1.0),
+            layer="below",
+        )
+        fig.add_shape(
+            type="path",
+            path=(
+                f"M {left},{top} "
+                f"L {left + dx},{top + dy} "
+                f"L {right + dx},{top + dy} "
+                f"L {right},{top} Z"
+            ),
+            fillcolor=shade_hex(color, 1.28),
+            line=dict(color=shade_hex(color, 0.82), width=0.8),
+            layer="below",
+        )
+        fig.add_shape(
+            type="path",
+            path=(
+                f"M {right},{0} "
+                f"L {right + dx},{dy} "
+                f"L {right + dx},{top + dy} "
+                f"L {right},{top} Z"
+            ),
+            fillcolor=shade_hex(color, 0.70),
+            line=dict(color=shade_hex(color, 0.60), width=0.8),
+            layer="below",
+        )
+
+        if text_format == "percent":
+            label_text = f"{value:.1%}" if value <= 1 else f"{value:.1f}%"
+        else:
+            label_text = f"{value:,.0f}"
+
+        fig.add_annotation(
+            x=index + dx / 2,
+            y=top * 0.56 if top else y_max * 0.03,
+            text=label_text,
+            showarrow=False,
+            font=dict(size=12, color="#111827", family="Arial, sans-serif"),
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis=dict(
+            tickmode="array",
+            tickvals=list(range(len(labels))),
+            ticktext=labels,
+            range=[-0.65, len(labels) - 0.25],
+        ),
+        yaxis=dict(range=[0, y_max], title=y_title, tickformat=y_tickformat),
+        showlegend=False,
+    )
+
+    return style_plotly_chart(fig, height=height)
+
+
+def make_gauge(
+    title: str,
+    value: float,
+    color: str,
+    suffix: str = "%",
+) -> go.Figure:
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=max(0, min(value * 100, 100)),
+            number={"suffix": suffix, "font": {"size": 28, "color": BRAND_COLORS["ink"]}},
+            title={"text": title, "font": {"size": 14, "color": BRAND_COLORS["forest"]}},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 0, "tickcolor": "#FFFFFF"},
+                "bar": {"color": color, "thickness": 0.24},
+                "bgcolor": "#FBFCF7",
+                "borderwidth": 1,
+                "bordercolor": BRAND_COLORS["line"],
+                "steps": [
+                    {"range": [0, 50], "color": "#F8E7E2"},
+                    {"range": [50, 75], "color": "#F7ECCC"},
+                    {"range": [75, 100], "color": "#EAF4E3"},
+                ],
+            },
+        )
+    )
+    return style_plotly_chart(fig, height=235)
+
+
+def safe_ratio(numerator: Any, denominator: Any) -> float:
+    denominator_value = float(denominator or 0)
+    if denominator_value == 0:
+        return 0.0
+    return float(numerator or 0) / denominator_value
 
 
 @st.cache_data(show_spinner=False)
@@ -220,12 +589,15 @@ def render_header(metric_mode: str) -> None:
     st.markdown(
         f"""
         <div class="hero">
-          <div class="hero-title">SC Coverage Report</div>
-          <div class="hero-subtitle">Snipes / Nike-Jordan Order Coverage</div>
-          <div class="hero-meta">
-            <span class="meta-pill">Last refresh: {timestamp}</span>
-            <span class="meta-pill">Metric mode: {metric_mode}</span>
-            <span class="meta-pill">Source: Supabase orderbook</span>
+          <div class="hero-inner">
+            <div class="hero-kicker">Supply Chain Management Dashboard</div>
+            <div class="hero-title">SC Coverage Report</div>
+            <div class="hero-subtitle">Snipes / Nike-Jordan order coverage, timing exposure, and reconciliation control</div>
+            <div class="hero-meta">
+              <span class="meta-pill">Last refresh: {escape(timestamp)}</span>
+              <span class="meta-pill">Metric mode: {escape(metric_mode)}</span>
+              <span class="meta-pill">Source: Supabase orderbook</span>
+            </div>
           </div>
         </div>
         """,
@@ -233,13 +605,18 @@ def render_header(metric_mode: str) -> None:
     )
 
 
-def render_kpi_card(label: str, value: str, note: str) -> None:
+def render_kpi_card(
+    label: str,
+    value: str,
+    note: str,
+    tone: str = "sage",
+) -> None:
     st.markdown(
         f"""
-        <div class="kpi-card">
-          <div class="kpi-label">{label}</div>
-          <div class="kpi-value">{value}</div>
-          <div class="kpi-note">{note}</div>
+        <div class="kpi-card kpi-{escape(tone)}">
+          <div class="kpi-label">{escape(label)}</div>
+          <div class="kpi-value">{escape(value)}</div>
+          <div class="kpi-note">{escape(note)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -258,6 +635,7 @@ def render_kpis(summary: dict[str, Any], metric_mode: str) -> None:
             columns["total_label"],
             fmt_number(summary.get(columns["total"]), metric_mode),
             "Total included demand",
+            "rose",
         )
 
     with col2:
@@ -265,6 +643,7 @@ def render_kpis(summary: dict[str, Any], metric_mode: str) -> None:
             columns["covered_label"],
             fmt_number(summary.get(columns["covered"]), metric_mode),
             "Booked/Shipped plus Available",
+            "amber",
         )
 
     with col3:
@@ -272,6 +651,7 @@ def render_kpis(summary: dict[str, Any], metric_mode: str) -> None:
             "Coverage %",
             fmt_pct(summary.get(columns["coverage_pct"])),
             f"{metric_mode.lower()} basis",
+            "lavender",
         )
 
     with col4:
@@ -279,18 +659,88 @@ def render_kpis(summary: dict[str, Any], metric_mode: str) -> None:
             columns["open_label"],
             fmt_number(summary.get(columns["open"]), metric_mode),
             "Remaining exposure",
+            "blue",
         )
 
     with col5:
         st.markdown(
             f"""
-            <div class="kpi-card">
+            <div class="kpi-card kpi-sage">
               <div class="kpi-label">Risk Level</div>
               <div class="kpi-value">{status_badge(str(risk), risk_color)}</div>
               <div class="kpi-note">Based on value coverage</div>
             </div>
             """,
             unsafe_allow_html=True,
+        )
+
+
+def render_scorecard(
+    summary: dict[str, Any],
+    metric_mode: str,
+    key_prefix: str,
+) -> None:
+    columns = selected_metric_columns(metric_mode)
+    metric_name = metric_label(metric_mode)
+    coverage_pct = float(summary.get(columns["coverage_pct"], 0) or 0)
+    open_pct = safe_ratio(summary.get(columns["open"]), summary.get(columns["total"]))
+    mix_df = make_status_mix(summary, metric_mode)
+
+    col1, col2, col3 = st.columns([1, 1, 1.25])
+
+    with col1:
+        fig = make_gauge(
+            title=f"{metric_name} Coverage",
+            value=coverage_pct,
+            color=(
+                BRAND_COLORS["green"]
+                if coverage_pct >= 0.75
+                else BRAND_COLORS["gold"]
+            ),
+        )
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"{key_prefix}_coverage_gauge_{metric_prefix(metric_mode)}",
+        )
+
+    with col2:
+        fig = make_gauge(
+            title=f"Open {metric_name}",
+            value=open_pct,
+            color=(
+                BRAND_COLORS["plum"]
+                if open_pct >= 0.25
+                else BRAND_COLORS["orange"]
+            ),
+        )
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"{key_prefix}_open_gauge_{metric_prefix(metric_mode)}",
+        )
+
+    with col3:
+        fig = px.pie(
+            mix_df,
+            names="Status",
+            values=metric_name,
+            hole=0.58,
+            color="Status",
+            color_discrete_map=STATUS_COLORS,
+            title=f"{metric_name} Mix",
+        )
+        fig.update_traces(
+            textposition="inside",
+            texttemplate="%{percent:.1%}",
+            pull=[0.02, 0.02, 0.04],
+            marker=dict(line=dict(color="#FFFFFF", width=2)),
+        )
+        fig.update_layout(showlegend=True)
+        st.plotly_chart(
+            style_plotly_chart(fig, height=235),
+            use_container_width=True,
+            key=f"{key_prefix}_mix_donut_{metric_prefix(metric_mode)}",
         )
 
 
@@ -316,22 +766,26 @@ def render_coverage_overview(
     columns = selected_metric_columns(metric_mode)
     metric_name = metric_label(metric_mode)
 
-    st.subheader("Coverage Overview")
+    panel_heading(
+        "Coverage Overview",
+        "Status mix, seasonal coverage, open exposure, and monthly coverage movement.",
+    )
 
     col1, col2 = st.columns(2)
     with col1:
         mix_df = make_status_mix(summary, metric_mode)
-        fig = px.bar(
+        fig = make_3d_block_chart(
             mix_df,
-            x="Status",
-            y=metric_name,
-            color="Status",
-            color_discrete_map=STATUS_COLORS,
-            text=metric_name,
+            x_column="Status",
+            y_column=metric_name,
             title="Coverage Mix by Status",
+            y_title=metric_name,
+            colors=[
+                STATUS_COLORS["Booked/Shipped"],
+                STATUS_COLORS["Available"],
+                STATUS_COLORS["Open Order"],
+            ],
         )
-        fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-        fig.update_layout(showlegend=False, yaxis_title=metric_name, xaxis_title="")
         st.plotly_chart(
             fig,
             use_container_width=True,
@@ -349,20 +803,19 @@ def render_coverage_overview(
                     open_exposure=(columns["open"], "sum"),
                 )
             )
-            fig = px.bar(
+            fig = make_3d_block_chart(
                 season_df,
-                x="season",
-                y="coverage_pct",
-                color="season",
+                x_column="season",
+                y_column="coverage_pct",
                 title=f"Coverage % by Season ({metric_name})",
-                text="coverage_pct",
-            )
-            fig.update_traces(texttemplate="%{text:.1%}", textposition="outside")
-            fig.update_layout(
-                showlegend=False,
-                yaxis_tickformat=".0%",
-                yaxis_title="Coverage %",
-                xaxis_title="Season",
+                y_title="Coverage %",
+                text_format="percent",
+                colors=[
+                    BRAND_COLORS["green"],
+                    BRAND_COLORS["blue"],
+                    BRAND_COLORS["plum"],
+                ],
+                y_tickformat=".0%",
             )
             st.plotly_chart(
                 fig,
@@ -379,16 +832,18 @@ def render_coverage_overview(
                 coverage_summary.groupby("season", as_index=False)
                 .agg(open_exposure=(columns["open"], "sum"))
             )
-            fig = px.bar(
+            fig = make_3d_block_chart(
                 exposure_df,
-                x="season",
-                y="open_exposure",
-                color="season",
+                x_column="season",
+                y_column="open_exposure",
                 title=f"Open Order Exposure by Season ({metric_name})",
-                text="open_exposure",
+                y_title=metric_name,
+                colors=[
+                    BRAND_COLORS["red"],
+                    BRAND_COLORS["orange"],
+                    BRAND_COLORS["plum"],
+                ],
             )
-            fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-            fig.update_layout(showlegend=False, yaxis_title=metric_name, xaxis_title="Season")
             st.plotly_chart(
                 fig,
                 use_container_width=True,
@@ -411,13 +866,23 @@ def render_coverage_overview(
                 markers=True,
                 title=f"Monthly Coverage Trend ({metric_name})",
             )
+            fig.update_traces(
+                line=dict(color=BRAND_COLORS["blue"], width=3),
+                marker=dict(
+                    color=BRAND_COLORS["green_2"],
+                    size=9,
+                    line=dict(color=BRAND_COLORS["navy"], width=1.2),
+                ),
+                fill="tozeroy",
+                fillcolor="rgba(100, 177, 200, 0.18)",
+            )
             fig.update_layout(
                 yaxis_tickformat=".0%",
                 yaxis_title="Coverage %",
                 xaxis_title="Requested Month",
             )
             st.plotly_chart(
-                fig,
+                style_plotly_chart(fig),
                 use_container_width=True,
                 key=f"{key_prefix}_monthly_trend_{metric_prefix(metric_mode)}",
             )
@@ -432,7 +897,10 @@ def render_timing_risk(
     metric = metric_prefix(metric_mode)
     metric_name = metric_label(metric_mode)
 
-    st.subheader("Timing Risk")
+    panel_heading(
+        "Timing Risk",
+        "Open order exposure split by delivery timing buckets and requested month.",
+    )
 
     if timing.empty:
         st.info("No open order timing risk found for the selected filters.")
@@ -456,17 +924,20 @@ def render_timing_risk(
     col1, col2 = st.columns(2)
 
     with col1:
-        fig = px.bar(
+        fig = make_3d_block_chart(
             bucket_df,
-            x="Timing Bucket",
-            y=metric_name,
-            color="Timing Bucket",
-            color_discrete_map=STATUS_COLORS,
-            text=metric_name,
+            x_column="Timing Bucket",
+            y_column=metric_name,
             title=f"Open Order Timing Bucket Exposure ({metric_name})",
+            y_title=metric_name,
+            colors=[
+                STATUS_COLORS["Early/On Time"],
+                STATUS_COLORS["+1 week"],
+                STATUS_COLORS["+2 weeks"],
+                STATUS_COLORS["+3 weeks"],
+                STATUS_COLORS["+4 weeks or later"],
+            ],
         )
-        fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-        fig.update_layout(showlegend=False, xaxis_title="", yaxis_title=metric_name)
         st.plotly_chart(
             fig,
             use_container_width=True,
@@ -481,19 +952,20 @@ def render_timing_risk(
             + heatmap_df["requested_month"].astype(str)
         )
         heatmap_df["Late Exposure %"] = heatmap_df[f"late_open_order_{metric}_percentage"]
-        fig = px.bar(
+        fig = make_3d_block_chart(
             heatmap_df,
-            x="Period",
-            y="Late Exposure %",
-            color="season",
-            text="Late Exposure %",
+            x_column="Period",
+            y_column="Late Exposure %",
             title=f"Timing Risk by Season and Requested Month ({metric_name})",
-        )
-        fig.update_traces(texttemplate="%{text:.1%}", textposition="outside")
-        fig.update_layout(
-            yaxis_tickformat=".0%",
-            xaxis_title="Season / Requested Month",
-            yaxis_title="Late Open Order %",
+            y_title="Late Open Order %",
+            text_format="percent",
+            colors=[
+                BRAND_COLORS["green"],
+                BRAND_COLORS["gold"],
+                BRAND_COLORS["red"],
+                BRAND_COLORS["plum"],
+            ],
+            y_tickformat=".0%",
         )
         st.plotly_chart(
             fig,
@@ -547,7 +1019,10 @@ def render_summary_table(
     metric_mode: str,
     key_prefix: str,
 ) -> None:
-    st.subheader("Coverage Summary")
+    panel_heading(
+        "Coverage Summary",
+        "Detailed season and requested-month coverage by the selected metric view.",
+    )
     summary_table = build_summary_table(report_data, metric_mode)
 
     if summary_table.empty:
@@ -581,7 +1056,10 @@ def render_summary_table(
 
 
 def render_observations(observations: list[str], observation_error: str | None) -> None:
-    st.subheader("Agent Observations")
+    panel_heading(
+        "Agent Observations",
+        "Business-readable interpretation of coverage, exposure, and validation status.",
+    )
 
     if observation_error:
         st.warning(
@@ -600,7 +1078,10 @@ def render_observations(observations: list[str], observation_error: str | None) 
 
 
 def render_validation(validation: dict[str, Any], key_prefix: str) -> None:
-    st.subheader("Validation")
+    panel_heading(
+        "Validation",
+        "Reconciliation checks between source rows and report output.",
+    )
     passed = bool(validation.get("passes_reconciliation"))
     badge = status_badge("PASS" if passed else "FAIL", "#16A34A" if passed else "#DC2626")
     st.markdown(badge, unsafe_allow_html=True)
@@ -713,6 +1194,8 @@ def main() -> None:
 
     with tabs[0]:
         render_kpis(summary, metric_mode)
+        st.divider()
+        render_scorecard(summary, metric_mode, key_prefix="dashboard")
         st.divider()
         render_coverage_overview(report_data, metric_mode, key_prefix="dashboard")
         st.divider()

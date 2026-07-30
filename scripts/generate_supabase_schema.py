@@ -6,9 +6,19 @@ OUTPUT_PATH = Path("docs/supabase_orderbook_schema.sql")
 TABLE_NAME = "orderbook"
 
 
+FORCED_TEXT_COLUMNS = [
+    "eta_vs_crd",
+]
+
+FORCED_NUMERIC_COLUMNS = [
+    "report_wholesale_value",
+    "report_volume",
+    "source_row_number",
+    "sales_order_line_item_number",
+]
+
 DATE_HINTS = [
     "date",
-    "eta",
     "week_commencing",
 ]
 
@@ -20,9 +30,7 @@ NUMERIC_HINTS = [
     "value",
     "amount",
     "carton",
-    "report_wholesale_value",
-    "sales_order_line_item_number",
-    "source_row_number",
+    "volume",
 ]
 
 
@@ -31,6 +39,12 @@ def infer_sql_type(column: str, series: pd.Series) -> str:
 
     if column == "id":
         return "bigserial primary key"
+
+    if col in FORCED_TEXT_COLUMNS:
+        return "text"
+
+    if col in FORCED_NUMERIC_COLUMNS:
+        return "numeric"
 
     if any(hint in col for hint in DATE_HINTS):
         parsed = pd.to_datetime(series, errors="coerce")

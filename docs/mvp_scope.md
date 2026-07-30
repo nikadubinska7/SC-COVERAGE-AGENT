@@ -35,10 +35,97 @@ Example:
   "reporting_date": "2026-07-16",
   "recipient_email": "user@example.com"
 }
-git status
-git add docs/mvp_scope.md docs/coverage_rules.md docs/data_dictionary.md docs/architecture.md
-git commit -m "Document MVP scope and coverage rules"
 
-ls docs
-ls docs
 
+Source data
+
+Supabase table:
+
+orderbook
+
+The table is populated with mock data derived from the ORDERBOOK worksheet in the source Excel workbook.
+
+Included statuses
+
+The MVP includes the following statuses in coverage calculations:
+
+Booked/Shipped
+Available
+Open Order
+
+Cancelled records are excluded from coverage calculations but counted in the validation tab.
+
+Report dimensions
+
+The report groups and filters data by:
+
+Banner
+Season
+Requested month
+Status
+Coverage timing bucket
+Brand
+Age/division
+Report metrics
+
+The MVP calculates:
+
+Confirmed wholesale value
+Available wholesale value
+Booked/Shipped value
+Open-order value
+Total value
+Percentage of total by status
+Coverage percentage
+Reconciliation difference
+
+Wholesale value is the mandatory MVP metric. Quantity-based reporting is optional and will be added only after confirming the exact quantity field in the source workbook.
+
+Coverage timing buckets
+
+Open orders are grouped into:
+
+Early/On Time
++1 week
++2 weeks
++3 weeks
++4 weeks or later
+
+The exact mapping will be implemented after validating the source workbook field used for ETA versus customer request date.
+
+Google Sheets output
+
+The MVP creates one Google Sheets file with three tabs:
+
+Executive Summary
+Coverage by Season
+Validation
+Success criteria
+
+The MVP is successful when:
+
+N8N triggers the workflow.
+The Python LangGraph agent runs without manual intervention.
+Supabase data is extracted successfully.
+Pinecone reporting rules are retrieved.
+Coverage calculations are completed.
+Report totals reconcile to source totals.
+Monetary reconciliation difference is no more than 0.01.
+Google Sheet is created successfully.
+Email notification contains a working report URL.
+Failures are logged and returned to N8N.
+Out of scope for MVP
+
+The following are excluded from the MVP:
+
+Multiple clients
+PDF export
+Advanced dashboard
+Scheduled weekly automation
+Historical availability snapshots
+All Excel tabs from the original workbook
+Manual business comments
+Real-time monitoring
+Full MCP server deployment
+Multi-company comparison
+Human approval before email

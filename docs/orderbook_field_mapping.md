@@ -9,7 +9,7 @@ Clean CSV: `data/processed/orderbook_clean.csv`
 
 - Source rows: 2041
 - Source columns: 71
-- Cleaned columns: 73
+- Cleaned columns: 74
 
 ## Column mapping
 

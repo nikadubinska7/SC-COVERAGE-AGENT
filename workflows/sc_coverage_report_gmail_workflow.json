@@ -1,0 +1,301 @@
+{
+  "name": "SC Coverage Report - Streamlit Gmail Notification",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "3ec37ca9-96c7-42c6-b0b7-d023a96c5931",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "fdd22ba5-9228-4ba5-a47c-f71cfb44cd02",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -760,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "project-path",
+              "name": "projectPath",
+              "type": "string",
+              "value": "/Users/ni4ka/Desktop/DESKTOP1/DESKTOP/IGROW/AI LEARNING/Ironhack AC/projects/sc_coverage_agent"
+            },
+            {
+              "id": "banner",
+              "name": "banner",
+              "type": "string",
+              "value": "Snipes"
+            },
+            {
+              "id": "seasons",
+              "name": "seasons",
+              "type": "array",
+              "value": [
+                "HO2026",
+                "SP2027"
+              ]
+            },
+            {
+              "id": "order-type",
+              "name": "orderType",
+              "type": "string",
+              "value": "Standard Order - Futures"
+            },
+            {
+              "id": "dashboard-url",
+              "name": "dashboardUrl",
+              "type": "string",
+              "value": "={{ $env.STREAMLIT_DASHBOARD_URL || 'http://localhost:8501' }}"
+            },
+            {
+              "id": "recipient-email",
+              "name": "recipientEmail",
+              "type": "string",
+              "value": "={{ $env.N8N_SC_REPORT_RECIPIENT_EMAIL }}"
+            },
+            {
+              "id": "recipient-name",
+              "name": "recipientName",
+              "type": "string",
+              "value": "={{ $env.N8N_SC_REPORT_RECIPIENT_NAME || '' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "29105ed3-8de1-44c1-b98d-b93076d3f026",
+      "name": "Report Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -500,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "command": "={{ 'cd \"' + $json.projectPath + '\" && venv/bin/python scripts/run_report_for_n8n.py --banner \"' + $json.banner + '\" --seasons ' + $json.seasons.map(season => '\"' + season + '\"').join(' ') + ' --order-type \"' + $json.orderType + '\" --dashboard-url \"' + $json.dashboardUrl + '\" --recipient-name \"' + $json.recipientName + '\"' }}"
+      },
+      "id": "9fab8dca-0892-47ca-b23f-eafc1208b054",
+      "name": "Run Report Agent",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const stdout = $json.stdout || '';\nconst stderr = $json.stderr || '';\nconst lines = stdout.trim().split(/\\r?\\n/).filter(Boolean);\nconst jsonLine = lines[lines.length - 1] || '{}';\n\nlet payload;\ntry {\n  payload = JSON.parse(jsonLine);\n} catch (error) {\n  payload = {\n    status: 'failed',\n    error: `Could not parse report runner JSON: ${error.message}`,\n    raw_stdout: stdout,\n    raw_stderr: stderr,\n    email_subject: 'SC Coverage Report Failed',\n    email_body: `The SC Coverage Report workflow failed before it could parse report output.\\n\\nSTDOUT:\\n${stdout}\\n\\nSTDERR:\\n${stderr}`,\n  };\n}\n\nreturn [{ json: payload }];"
+      },
+      "id": "d53c3b7e-dc32-4999-aaf6-9e8809a1fb3c",
+      "name": "Parse Report JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "status-success",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "validation-passed",
+              "leftValue": "={{ $json.validation_passed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0f06d914-8973-4e6d-8d85-e86f06cf3c04",
+      "name": "Report Successful?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Report Config').item.json.recipientEmail }}",
+        "subject": "={{ $json.email_subject }}",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "id": "515795fb-0853-44fb-af4d-8354b7f2a5b9",
+      "name": "Send Gmail - Report Ready",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        560,
+        -80
+      ],
+      "webhookId": "0988cf41-3814-4ac6-b6de-b622f6a183c0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Report Config').item.json.recipientEmail }}",
+        "subject": "={{ $json.email_subject || 'SC Coverage Report Failed' }}",
+        "message": "={{ $json.email_body || ('The SC Coverage Report workflow failed.\\n\\nError: ' + ($json.error || 'Unknown error')) }}",
+        "options": {}
+      },
+      "id": "af15f943-6917-499d-89dd-e62062a0059d",
+      "name": "Send Gmail - Failure",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        560,
+        140
+      ],
+      "webhookId": "c0861f41-45ec-40cd-9cce-73552e41bd5e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Report Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Report Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Config": {
+      "main": [
+        [
+          {
+            "node": "Run Report Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Report Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Report JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Report JSON": {
+      "main": [
+        [
+          {
+            "node": "Report Successful?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Successful?": {
+      "main": [
+        [
+          {
+            "node": "Send Gmail - Report Ready",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Gmail - Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-07-25T00:00:00.000Z",
+  "versionId": "1"
+}

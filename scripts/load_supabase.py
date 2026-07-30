@@ -38,12 +38,28 @@ def clean_record(record: dict) -> dict:
     return {key: clean_value(value) for key, value in record.items()}
 
 
+def normalize_date_series(series: pd.Series) -> pd.Series:
+    numeric_values = pd.to_numeric(series, errors="coerce")
+    excel_serial_mask = numeric_values.between(20000, 60000)
+
+    parsed = pd.to_datetime(series, errors="coerce")
+
+    if excel_serial_mask.any():
+        parsed_excel = pd.to_datetime(
+            numeric_values.where(excel_serial_mask),
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce",
+        )
+        parsed = parsed.where(~excel_serial_mask, parsed_excel)
+
+    return parsed.dt.strftime("%Y-%m-%d").where(parsed.notna(), None)
+
+
 def normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
     for col in DATE_COLUMNS:
         if col in df.columns:
-            parsed = pd.to_datetime(df[col], errors="coerce")
-            df[col] = parsed.dt.strftime("%Y-%m-%d")
-            df[col] = df[col].where(parsed.notna(), None)
+            df[col] = normalize_date_series(df[col])
 
     return df
 
