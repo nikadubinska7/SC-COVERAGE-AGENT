@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, dash_table, dcc, html
+from flask import jsonify, request
 
 from src.services.dashboard_data import (
     DEFAULT_BANNER,
@@ -594,6 +596,54 @@ filter_options = get_filter_options()
 
 app = Dash(__name__, title="SC Coverage Executive Dashboard")
 server = app.server
+
+
+@server.route("/run-report", methods=["POST"])
+def run_report_endpoint():
+    payload = request.get_json(silent=True) or {}
+    banner = str(payload.get("banner") or DEFAULT_BANNER)
+    seasons = payload.get("seasons") or DEFAULT_SEASONS
+    order_type = str(payload.get("order_type") or DEFAULT_ORDER_TYPE)
+    recipient_name = str(payload.get("recipient_name") or "")
+    dashboard_url = str(payload.get("dashboard_url") or request.host_url.rstrip("/"))
+
+    if isinstance(seasons, str):
+        seasons = [season.strip() for season in seasons.split(",") if season.strip()]
+
+    season_text = ", ".join(str(season) for season in seasons)
+    greeting = f"Hi {recipient_name}," if recipient_name else "Hi,"
+
+    email_subject = f"SC Coverage Dashboard Ready - {banner} - {season_text}"
+    email_body = f"""{greeting}
+
+The SC Coverage dashboard is ready.
+
+Dashboard:
+{dashboard_url}
+
+Report scope:
+- Banner: {banner}
+- Seasons: {season_text}
+- Order type: {order_type}
+
+Open the dashboard link to view the current executive report with filters, value/volume views, timing risk, and open exceptions.
+
+This message was generated automatically by the SC Coverage Report Agent.
+"""
+
+    return jsonify(
+        {
+            "status": "success",
+            "mode": "dashboard_link",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "dashboard_url": dashboard_url,
+            "banner": banner,
+            "seasons": seasons,
+            "order_type": order_type,
+            "email_subject": email_subject,
+            "email_body": email_body,
+        }
+    )
 
 app.index_string = """
 <!DOCTYPE html>
