@@ -161,6 +161,14 @@ def make_options(values: list[str]) -> list[dict[str, str]]:
     return [{"label": value, "value": value} for value in values]
 
 
+def normalize_payload_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
 def empty_figure(message: str) -> go.Figure:
     fig = go.Figure()
     fig.add_annotation(
@@ -602,18 +610,59 @@ server = app.server
 def run_report_endpoint():
     payload = request.get_json(silent=True) or {}
     banner = str(payload.get("banner") or DEFAULT_BANNER)
-    seasons = payload.get("seasons") or DEFAULT_SEASONS
+    seasons = normalize_payload_list(payload.get("seasons")) or DEFAULT_SEASONS
+    requested_months = normalize_payload_list(payload.get("requested_months"))
     order_type = str(payload.get("order_type") or DEFAULT_ORDER_TYPE)
     recipient_name = str(payload.get("recipient_name") or "")
     dashboard_url = str(payload.get("dashboard_url") or request.host_url.rstrip("/"))
 
-    if isinstance(seasons, str):
-        seasons = [season.strip() for season in seasons.split(",") if season.strip()]
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    records = load_orderbook_records(
+        banner=banner,
+        seasons=seasons,
+        order_type=order_type,
+    )
+    base_df = records_to_filter_dataframe(records)
+    filtered_df = apply_dashboard_filters(
+        base_df,
+        {"requested_month": requested_months},
+    )
+
+    if filtered_df.empty:
+        return jsonify(
+            {
+                "status": "failed",
+                "mode": "dashboard_link",
+                "generated_at": generated_at,
+                "report_run_id": generated_at,
+                "dashboard_url": dashboard_url,
+                "banner": banner,
+                "seasons": seasons,
+                "requested_months": requested_months,
+                "order_type": order_type,
+                "error": "No records matched the report filters.",
+                "email_subject": f"SC Coverage Report Failed - {banner}",
+                "email_body": (
+                    "The SC Coverage Report workflow ran, but no records matched "
+                    "the selected banner, season, order type, and requested month filters."
+                ),
+            }
+        ), 400
+
+    report_data = build_coverage_report(filtered_df.to_dict(orient="records"))
+    summary = report_data.get("executive_summary", {})
+    validation = report_data.get("validation", {})
 
     season_text = ", ".join(str(season) for season in seasons)
+    requested_month_text = ", ".join(requested_months) if requested_months else "All"
     greeting = f"Hi {recipient_name}," if recipient_name else "Hi,"
 
-    email_subject = f"SC Coverage Dashboard Ready - {banner} - {season_text}"
+    risk_level_value = str(summary.get("risk_level", "N/A"))
+    email_subject = (
+        f"SC Coverage Dashboard Ready - {banner} - {season_text} - "
+        f"Risk: {risk_level_value}"
+    )
     email_body = f"""{greeting}
 
 The SC Coverage dashboard is ready.
@@ -624,7 +673,17 @@ Dashboard:
 Report scope:
 - Banner: {banner}
 - Seasons: {season_text}
+- Requested months: {requested_month_text}
 - Order type: {order_type}
+
+Executive summary:
+- Value coverage: {format_pct(summary.get("value_coverage_percentage"))}
+- Volume coverage: {format_pct(summary.get("volume_coverage_percentage"))}
+- Open order value: {format_number(summary.get("open_order_value"), "Value")}
+- Open order volume: {format_number(summary.get("open_order_volume"))}
+- Included rows: {summary.get("included_rows", 0):,}
+- Cancelled rows excluded: {summary.get("cancelled_rows", 0):,}
+- Risk level: {risk_level_value}
 
 Open the dashboard link to view the current executive report with filters, value/volume views, timing risk, and open exceptions.
 
@@ -635,11 +694,32 @@ This message was generated automatically by the SC Coverage Report Agent.
         {
             "status": "success",
             "mode": "dashboard_link",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": generated_at,
+            "report_run_id": generated_at,
             "dashboard_url": dashboard_url,
             "banner": banner,
             "seasons": seasons,
+            "requested_months": requested_months,
             "order_type": order_type,
+            "records_count": len(records),
+            "filtered_records_count": len(filtered_df),
+            "source_rows": summary.get("source_rows"),
+            "included_rows": summary.get("included_rows"),
+            "cancelled_rows": summary.get("cancelled_rows"),
+            "total_value": summary.get("total_value"),
+            "covered_value": summary.get("covered_value"),
+            "open_order_value": summary.get("open_order_value"),
+            "value_coverage_percentage": summary.get("value_coverage_percentage"),
+            "total_volume": summary.get("total_volume"),
+            "covered_volume": summary.get("covered_volume"),
+            "open_order_volume": summary.get("open_order_volume"),
+            "volume_coverage_percentage": summary.get("volume_coverage_percentage"),
+            "risk_level": risk_level_value,
+            "validation_passed": validation.get("passes_reconciliation"),
+            "value_difference": validation.get("value_difference"),
+            "volume_difference": validation.get("volume_difference"),
+            "unexpected_statuses": validation.get("unexpected_statuses", []),
+            "missing_required_values": validation.get("missing_required_values", {}),
             "email_subject": email_subject,
             "email_body": email_body,
         }
