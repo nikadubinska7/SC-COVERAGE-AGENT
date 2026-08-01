@@ -75,7 +75,18 @@ Chunking: 900-character chunks with 150-character overlap
 The dashboard uses Pinecone in two visible ways:
 
 1. `Pinecone Business Rules` panel retrieves relevant reporting-rule snippets for the current report context.
-2. `Ask AI About This Report` uses the current report context plus retrieved Pinecone rules to answer business questions.
+2. `Ask AI About This Report` retrieves Pinecone rule snippets for each user question and combines them with current raw-data-derived report context.
+
+The chat does not send the entire raw orderbook to the LLM. Python first derives compact, deterministic summaries from the currently filtered Supabase dataframe:
+
+- highest-risk category by open-order exposure
+- category and sub-category risk summaries
+- top raw open-order rows
+- coverage summary
+- timing-risk summary
+- validation results
+
+The LLM receives these summaries plus Pinecone rule snippets. This makes answers data-grounded and rule-grounded without asking the model to calculate financial metrics.
 
 ## Deterministic Reporting Logic
 

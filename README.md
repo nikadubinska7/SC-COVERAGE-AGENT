@@ -41,7 +41,7 @@ The dashboard reports:
 - validation and reconciliation status
 - top open-order exceptions
 - Pinecone-backed business rule explanations
-- AI chat grounded in current report data and retrieved Pinecone rules
+- AI chat grounded in current filtered orderbook summaries and retrieved Pinecone rules
 
 n8n creates:
 
@@ -158,3 +158,15 @@ Pinecone + ReAct = agent reasoning/context layer
 ```
 
 This keeps calculations deterministic while using AI for rule-grounded explanations and observations.
+
+## AI Chat Grounding
+
+The dashboard chat does not ask the LLM to scan the full raw database directly. Instead, Python derives compact summaries from the currently filtered Supabase/orderbook dataframe:
+
+- highest-risk category by open-order value
+- category risk summary
+- sub-category risk summary
+- top raw open-order rows by exposure
+- coverage, timing, and validation summaries
+
+For each user question, the app retrieves relevant Pinecone rule chunks and sends both the raw-data-derived context and the retrieved rules to the LLM. This keeps answers tied to actual data while satisfying the Pinecone RAG requirement.

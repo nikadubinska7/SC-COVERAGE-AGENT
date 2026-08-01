@@ -332,6 +332,10 @@ def build_report_chat_context(report_data: dict[str, Any] | None) -> dict[str, A
         "validation": report_data.get("validation", {}),
         "coverage_summary": report_data.get("coverage_summary", [])[:12],
         "timing_risk": report_data.get("timing_risk", [])[:12],
+        "highest_category_risk": report_data.get("highest_category_risk", {}),
+        "category_risk_summary": report_data.get("category_risk_summary", [])[:15],
+        "sub_category_risk_summary": report_data.get("sub_category_risk_summary", [])[:15],
+        "top_raw_open_order_rows": report_data.get("top_raw_open_order_rows", [])[:10],
     }
 
 
@@ -352,20 +356,27 @@ def answer_report_question(
     if not os.getenv("OPENAI_API_KEY"):
         return "OpenAI is not configured for this deployment. Add OPENAI_API_KEY to enable report chat."
 
+    question_rules, question_rules_error = get_pinecone_rules(
+        report_data,
+        {"user_question": [clean_question]},
+        top_k=4,
+    )
+    combined_rules = question_rules or rules
+
     rules_context = [
         {
             "title": rule.get("title"),
             "source": rule.get("source"),
             "text": str(rule.get("text") or "")[:900],
         }
-        for rule in rules[:4]
+        for rule in combined_rules[:4]
     ]
 
     prompt = f"""
 You are a supply-chain coverage analyst embedded in an executive dashboard.
 
 Answer the user's question using only:
-1. The current report context.
+1. The current report context, including raw orderbook-derived summaries.
 2. The retrieved Pinecone business/reporting rules.
 
 Rules:
@@ -373,13 +384,20 @@ Rules:
 - Do not invent unavailable data.
 - Explain which retrieved rule supports the answer when relevant.
 - If the question asks for calculation logic, reference the rule text.
+- If the question asks about category, product category, sub-category, or highest risk, use highest_category_risk and category_risk_summary first. Name the actual category and use its value/volume metrics.
+- Do not answer category questions with season/month only when category_risk_summary is available.
+- If the question asks for raw-data detail, use top_raw_open_order_rows and say these are the highest-exposure rows from the currently filtered orderbook.
 - If the question asks for business interpretation, connect the answer to coverage, open-order exposure, timing risk, and validation.
+- If Pinecone retrieval fails, still answer from report context and mention that rule retrieval was unavailable.
 
 Current report context:
 {build_report_chat_context(report_data)}
 
 Retrieved Pinecone rules:
 {rules_context}
+
+Pinecone retrieval error:
+{question_rules_error}
 
 User question:
 {clean_question}
@@ -622,6 +640,169 @@ def build_summary_table(report_data: dict[str, Any], metric_mode: str) -> list[d
     return table.to_dict("records")
 
 
+def classify_risk_level(coverage_percentage: float) -> str:
+    if coverage_percentage >= 0.75:
+        return "Low"
+    if coverage_percentage >= 0.5:
+        return "Medium"
+    return "High"
+
+
+def build_dimension_risk_context(
+    df: pd.DataFrame,
+    dimension: str,
+    limit: int = 15,
+) -> list[dict[str, Any]]:
+    required_columns = {
+        dimension,
+        "status",
+        "report_wholesale_value",
+        "report_volume",
+    }
+    if df.empty or not required_columns.issubset(df.columns):
+        return []
+
+    included = df[df["is_included"]].copy() if "is_included" in df else df.copy()
+    if included.empty:
+        return []
+
+    included[dimension] = included[dimension].fillna("Unclassified").astype(str)
+    included["is_open_order"] = included["status"].astype(str).str.strip() == "Open Order"
+    included["is_covered"] = included["status"].astype(str).str.strip().isin(
+        ["Booked/Shipped", "Available"]
+    )
+    included["open_order_value"] = included["report_wholesale_value"].where(
+        included["is_open_order"],
+        0,
+    )
+    included["open_order_volume"] = included["report_volume"].where(
+        included["is_open_order"],
+        0,
+    )
+    included["covered_value"] = included["report_wholesale_value"].where(
+        included["is_covered"],
+        0,
+    )
+    included["covered_volume"] = included["report_volume"].where(
+        included["is_covered"],
+        0,
+    )
+
+    grouped = (
+        included.groupby(dimension, as_index=False)
+        .agg(
+            total_value=("report_wholesale_value", "sum"),
+            covered_value=("covered_value", "sum"),
+            open_order_value=("open_order_value", "sum"),
+            total_volume=("report_volume", "sum"),
+            covered_volume=("covered_volume", "sum"),
+            open_order_volume=("open_order_volume", "sum"),
+            rows=("source_row_number", "count"),
+        )
+        .sort_values(["open_order_value", "open_order_volume"], ascending=False)
+    )
+
+    if grouped.empty:
+        return []
+
+    grouped["value_coverage_percentage"] = grouped.apply(
+        lambda row: row["covered_value"] / row["total_value"]
+        if row["total_value"]
+        else 0,
+        axis=1,
+    )
+    grouped["volume_coverage_percentage"] = grouped.apply(
+        lambda row: row["covered_volume"] / row["total_volume"]
+        if row["total_volume"]
+        else 0,
+        axis=1,
+    )
+    grouped["open_order_value_percentage"] = grouped.apply(
+        lambda row: row["open_order_value"] / row["total_value"]
+        if row["total_value"]
+        else 0,
+        axis=1,
+    )
+    grouped["risk_level"] = grouped["value_coverage_percentage"].map(classify_risk_level)
+
+    output_columns = [
+        dimension,
+        "risk_level",
+        "total_value",
+        "covered_value",
+        "open_order_value",
+        "value_coverage_percentage",
+        "open_order_value_percentage",
+        "total_volume",
+        "covered_volume",
+        "open_order_volume",
+        "volume_coverage_percentage",
+        "rows",
+    ]
+    grouped = grouped[output_columns].head(limit).copy()
+
+    for column in [
+        "total_value",
+        "covered_value",
+        "open_order_value",
+        "total_volume",
+        "covered_volume",
+        "open_order_volume",
+    ]:
+        grouped[column] = grouped[column].round(2)
+
+    for column in [
+        "value_coverage_percentage",
+        "volume_coverage_percentage",
+        "open_order_value_percentage",
+    ]:
+        grouped[column] = grouped[column].round(4)
+
+    return grouped.to_dict("records")
+
+
+def build_top_raw_open_order_rows(df: pd.DataFrame, limit: int = 10) -> list[dict[str, Any]]:
+    if df.empty or "status" not in df:
+        return []
+
+    open_orders = df[df["status"].astype(str).str.strip() == "Open Order"].copy()
+    if open_orders.empty:
+        return []
+
+    open_orders = open_orders.sort_values(
+        ["report_wholesale_value", "report_volume"],
+        ascending=[False, False],
+    ).head(limit)
+
+    columns = [
+        "source_row_number",
+        "season",
+        "requested_month",
+        "category",
+        "sub_category",
+        "gender",
+        "age_division",
+        "style_color",
+        "style_name",
+        "coverage_performance",
+        "eta",
+        "customer_request_date",
+        "timing_bucket",
+        "report_wholesale_value",
+        "report_volume",
+        "ship_to_name",
+        "sold_to_name",
+    ]
+    available_columns = [column for column in columns if column in open_orders.columns]
+    output = open_orders[available_columns].copy()
+
+    for column in ["report_wholesale_value", "report_volume"]:
+        if column in output:
+            output[column] = pd.to_numeric(output[column], errors="coerce").fillna(0).round(2)
+
+    return output.where(pd.notna(output), None).to_dict("records")
+
+
 def build_insights(
     report_data: dict[str, Any],
     filtered_df: pd.DataFrame,
@@ -694,6 +875,14 @@ def build_dashboard_content(
         return [], [], empty, empty, empty, empty, empty, [], [], None
 
     report_data = build_coverage_report(filtered_df.to_dict("records"))
+    category_risk_summary = build_dimension_risk_context(filtered_df, "category")
+    sub_category_risk_summary = build_dimension_risk_context(filtered_df, "sub_category")
+    report_data["category_risk_summary"] = category_risk_summary
+    report_data["highest_category_risk"] = (
+        category_risk_summary[0] if category_risk_summary else {}
+    )
+    report_data["sub_category_risk_summary"] = sub_category_risk_summary
+    report_data["top_raw_open_order_rows"] = build_top_raw_open_order_rows(filtered_df)
     summary = report_data["executive_summary"]
     cols = metric_columns(metric_mode)
 
