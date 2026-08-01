@@ -7,8 +7,10 @@ from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, dash_table, dcc, html
+from dash import Dash, Input, Output, State, dash_table, dcc, html
+from dotenv import load_dotenv
 from flask import jsonify, request
+from langchain_openai import ChatOpenAI
 
 from src.services.dashboard_data import (
     DEFAULT_BANNER,
@@ -20,6 +22,7 @@ from src.services.dashboard_data import (
     records_to_filter_dataframe,
 )
 from src.services.transformations import build_coverage_report
+from src.tools.pinecone_tool import retrieve_reporting_rules
 
 
 FILTER_CONFIG = [
@@ -262,6 +265,163 @@ def build_coverage_exceptions(
         )
 
     return exceptions
+
+
+@lru_cache(maxsize=64)
+def retrieve_rules_cached(query: str, top_k: int = 4) -> tuple[tuple[tuple[str, Any], ...], ...]:
+    rules = retrieve_reporting_rules(query=query, top_k=top_k)
+    normalized_rules = []
+
+    for rule in rules:
+        normalized_rules.append(
+            tuple(
+                sorted(
+                    {
+                        "title": rule.get("title") or "Reporting rule",
+                        "source": rule.get("source") or "Pinecone",
+                        "score": rule.get("score"),
+                        "text": rule.get("text") or "",
+                    }.items()
+                )
+            )
+        )
+
+    return tuple(normalized_rules)
+
+
+def rules_tuple_to_dicts(
+    rules: tuple[tuple[tuple[str, Any], ...], ...],
+) -> list[dict[str, Any]]:
+    return [dict(rule) for rule in rules]
+
+
+def build_rule_query(
+    report_data: dict[str, Any] | None,
+    selected_filters: dict[str, list[str]] | None = None,
+) -> str:
+    summary = (report_data or {}).get("executive_summary", {})
+    filters = selected_filters or {}
+
+    return (
+        "Explain SC coverage calculation, included statuses, validation rules, "
+        "open order timing buckets, and business interpretation for "
+        f"risk level {summary.get('risk_level', 'N/A')}. "
+        f"Filters: {filters}."
+    )
+
+
+def get_pinecone_rules(
+    report_data: dict[str, Any] | None,
+    selected_filters: dict[str, list[str]] | None = None,
+    top_k: int = 4,
+) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        query = build_rule_query(report_data, selected_filters)
+        return rules_tuple_to_dicts(retrieve_rules_cached(query, top_k)), None
+    except Exception as exc:
+        return [], str(exc)
+
+
+def render_rule_explanations(
+    rules: list[dict[str, Any]],
+    error: str | None,
+) -> html.Div:
+    if error:
+        return html.Div(
+            f"Pinecone rules unavailable: {error}",
+            className="ai-empty",
+        )
+
+    if not rules:
+        return html.Div("No Pinecone rules returned for this report.", className="ai-empty")
+
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(str(rule.get("title") or "Reporting rule"), className="rule-title"),
+                    html.Div(str(rule.get("source") or "Pinecone"), className="rule-source"),
+                    html.Div(str(rule.get("text") or "")[:700], className="rule-text"),
+                ],
+                className="rule-card",
+            )
+            for rule in rules
+        ],
+        className="rule-list",
+    )
+
+
+def build_report_chat_context(report_data: dict[str, Any] | None) -> dict[str, Any]:
+    if not report_data:
+        return {}
+
+    return {
+        "executive_summary": report_data.get("executive_summary", {}),
+        "validation": report_data.get("validation", {}),
+        "coverage_summary": report_data.get("coverage_summary", [])[:12],
+        "timing_risk": report_data.get("timing_risk", [])[:12],
+    }
+
+
+def answer_report_question(
+    question: str,
+    report_data: dict[str, Any] | None,
+    rules: list[dict[str, Any]],
+) -> str:
+    load_dotenv()
+
+    clean_question = question.strip()
+    if not clean_question:
+        return "Ask a specific question about coverage, risk, validation, timing, or open orders."
+
+    if not report_data:
+        return "No report context is loaded yet. Refresh the dashboard and try again."
+
+    if not os.getenv("OPENAI_API_KEY"):
+        return "OpenAI is not configured for this deployment. Add OPENAI_API_KEY to enable report chat."
+
+    rules_context = [
+        {
+            "title": rule.get("title"),
+            "source": rule.get("source"),
+            "text": str(rule.get("text") or "")[:900],
+        }
+        for rule in rules[:4]
+    ]
+
+    prompt = f"""
+You are a supply-chain coverage analyst embedded in an executive dashboard.
+
+Answer the user's question using only:
+1. The current report context.
+2. The retrieved Pinecone business/reporting rules.
+
+Rules:
+- Be concise and business-like.
+- Do not invent unavailable data.
+- Explain which retrieved rule supports the answer when relevant.
+- If the question asks for calculation logic, reference the rule text.
+- If the question asks for business interpretation, connect the answer to coverage, open-order exposure, timing risk, and validation.
+
+Current report context:
+{build_report_chat_context(report_data)}
+
+Retrieved Pinecone rules:
+{rules_context}
+
+User question:
+{clean_question}
+"""
+
+    try:
+        llm = ChatOpenAI(
+            model=os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+            temperature=0,
+        )
+        response = llm.invoke(prompt)
+        return str(response.content).strip()
+    except Exception as exc:
+        return f"AI answer unavailable: {exc}"
 
 
 def empty_figure(message: str) -> go.Figure:
@@ -542,13 +702,24 @@ def build_dashboard_content(
     metric_mode: str,
     selected_filters: dict[str, list[str]],
     refresh_token: int,
-) -> tuple[list[Any], list[Any], go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    list[Any],
+    list[Any],
+    go.Figure,
+    go.Figure,
+    go.Figure,
+    go.Figure,
+    go.Figure,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+]:
     base_df = load_base_dataframe(refresh_token)
     filtered_df = apply_dashboard_filters(base_df, selected_filters)
 
     if filtered_df.empty:
         empty = empty_figure("No rows match the selected filters")
-        return [], [], empty, empty, empty, empty, empty, [], []
+        return [], [], empty, empty, empty, empty, empty, [], [], None
 
     report_data = build_coverage_report(filtered_df.to_dict("records"))
     summary = report_data["executive_summary"]
@@ -692,6 +863,7 @@ def build_dashboard_content(
         timing_fig,
         build_summary_table(report_data, metric_mode),
         top_open_records,
+        report_data,
     )
 
 
@@ -1021,6 +1193,69 @@ app.index_string = """
         gap: 12px;
         margin-top: 14px;
       }
+      .ai-grid {
+        display: grid;
+        grid-template-columns: 0.95fr 1.05fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .rule-list {
+        display: grid;
+        gap: 8px;
+      }
+      .rule-card {
+        background: var(--surface-muted);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .rule-title {
+        color: var(--ink-primary);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .rule-source {
+        color: var(--ink-muted);
+        font-size: 10.5px;
+        margin-top: 2px;
+      }
+      .rule-text {
+        color: var(--ink-secondary);
+        font-size: 12px;
+        line-height: 1.45;
+        margin-top: 7px;
+      }
+      .ai-empty, .ai-answer {
+        color: var(--ink-secondary);
+        font-size: 12.5px;
+        line-height: 1.5;
+        padding: 10px 12px;
+      }
+      .ai-answer {
+        background: var(--surface-muted);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+      }
+      .ai-question {
+        width: 100%;
+        min-height: 86px;
+        box-sizing: border-box;
+        resize: vertical;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: var(--ink-primary);
+        background: var(--surface);
+        font-family: var(--font);
+        font-size: 12.5px;
+        line-height: 1.45;
+      }
+      .ai-question:focus {
+        outline: 2px solid rgba(42, 120, 214, 0.18);
+        border-color: var(--accent-blue);
+      }
       button {
         background: var(--surface);
         color: var(--ink-primary);
@@ -1063,7 +1298,7 @@ app.index_string = """
         margin-right: 10px;
       }
       @media (max-width: 1100px) {
-        .layout-grid, .chart-grid, .tables-grid, .insight-list {
+        .layout-grid, .chart-grid, .tables-grid, .insight-list, .ai-grid {
           grid-template-columns: 1fr;
         }
         .sidebar, .dashboard-main {
@@ -1106,6 +1341,8 @@ def dropdown(column: str, label: str) -> html.Div:
 
 app.layout = html.Div(
     [
+        dcc.Store(id="report-context-store"),
+        dcc.Store(id="rules-context-store"),
         html.Div(
             [
                 html.Div(
@@ -1152,6 +1389,37 @@ app.layout = html.Div(
                                 panel("Timing Risk", dcc.Graph(id="timing-risk")),
                             ],
                             className="chart-grid",
+                        ),
+                        html.Div(
+                            [
+                                panel(
+                                    "Pinecone Business Rules",
+                                    html.Div(id="rule-explanations"),
+                                ),
+                                panel(
+                                    "Ask AI About This Report",
+                                    html.Div(
+                                        [
+                                            dcc.Textarea(
+                                                id="ai-question",
+                                                className="ai-question",
+                                                placeholder="Ask about coverage logic, risk drivers, timing exposure, validation, or what to review next.",
+                                            ),
+                                            html.Button(
+                                                "Ask AI",
+                                                id="ask-ai",
+                                                n_clicks=0,
+                                            ),
+                                            html.Div(
+                                                "Ask a question to get a Pinecone-grounded answer based on the current report.",
+                                                id="ai-answer",
+                                                className="ai-empty",
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                            ],
+                            className="ai-grid",
                         ),
                         html.Div(
                             [
@@ -1249,6 +1517,9 @@ app.layout = html.Div(
     Output("coverage-table", "columns"),
     Output("exceptions-table", "data"),
     Output("exceptions-table", "columns"),
+    Output("rule-explanations", "children"),
+    Output("report-context-store", "data"),
+    Output("rules-context-store", "data"),
     Input("metric-mode", "value"),
     Input("filter-season", "value"),
     Input("filter-requested_month", "value"),
@@ -1299,10 +1570,12 @@ def update_dashboard(
         timing_fig,
         summary_rows,
         exception_rows,
+        report_data,
     ) = build_dashboard_content(metric_mode, selected_filters, refresh_data_clicks or 0)
 
     summary_columns = [{"name": column, "id": column} for column in (summary_rows[0].keys() if summary_rows else [])]
     exception_columns = [{"name": column, "id": column} for column in (exception_rows[0].keys() if exception_rows else [])]
+    rules, rules_error = get_pinecone_rules(report_data, selected_filters)
 
     return (
         cards,
@@ -1316,7 +1589,35 @@ def update_dashboard(
         summary_columns,
         exception_rows,
         exception_columns,
+        render_rule_explanations(rules, rules_error),
+        report_data or {},
+        rules,
     )
+
+
+@app.callback(
+    Output("ai-answer", "children"),
+    Output("ai-answer", "className"),
+    Input("ask-ai", "n_clicks"),
+    State("ai-question", "value"),
+    State("report-context-store", "data"),
+    State("rules-context-store", "data"),
+    prevent_initial_call=True,
+)
+def update_ai_answer(
+    n_clicks: int,
+    question: str | None,
+    report_data: dict[str, Any] | None,
+    rules: list[dict[str, Any]] | None,
+) -> tuple[str, str]:
+    if not n_clicks:
+        return (
+            "Ask a question to get a Pinecone-grounded answer based on the current report.",
+            "ai-empty",
+        )
+
+    answer = answer_report_question(question or "", report_data, rules or [])
+    return answer, "ai-answer"
 
 
 if __name__ == "__main__":
