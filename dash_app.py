@@ -1225,15 +1225,23 @@ app.index_string = """
         display: none;
       }
       .ai-chat-overlay {
-        display: none;
+        display: flex;
         position: fixed;
         inset: 0;
         align-items: center;
         justify-content: center;
-        z-index: 1000;
+        z-index: 9000;
+        isolation: isolate;
+        transform: translateZ(0);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.12s ease-out;
       }
       .ai-chat.is-expanded .ai-chat-overlay {
-        display: flex;
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto;
       }
       .ai-chat-backdrop {
         position: absolute;
@@ -1253,11 +1261,11 @@ app.index_string = """
         border-radius: 12px;
         box-shadow: 0 24px 48px rgba(11, 11, 11, 0.22), 0 4px 12px rgba(11, 11, 11, 0.10);
         padding: 18px 20px 20px;
-        animation: aiChatPop 0.15s ease-out;
+        transform: scale(0.97);
+        transition: transform 0.12s ease-out;
       }
-      @keyframes aiChatPop {
-        from { opacity: 0; transform: scale(0.97); }
-        to { opacity: 1; transform: scale(1); }
+      .ai-chat.is-expanded .ai-chat-modal {
+        transform: scale(1);
       }
       .ai-chat-header {
         display: flex;
@@ -1417,6 +1425,41 @@ app.layout = html.Div(
         dcc.Store(id="rules-context-store"),
         html.Div(
             [
+                html.Div(id="ai-chat-backdrop", className="ai-chat-backdrop", n_clicks=0),
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.Span("Ask AI About This Report", className="ai-chat-title"),
+                                html.Button(
+                                    "⤡",
+                                    id="ai-chat-minimize",
+                                    className="ai-chat-icon-btn",
+                                    n_clicks=0,
+                                    title="Minimize",
+                                ),
+                            ],
+                            className="ai-chat-header",
+                        ),
+                        dcc.Textarea(
+                            id="ai-question",
+                            className="ai-question",
+                            placeholder="Ask about coverage logic, risk drivers, timing exposure, or what to review next.",
+                        ),
+                        html.Button("Ask AI", id="ask-ai", n_clicks=0, className="ai-ask-btn"),
+                        html.Div(
+                            "Ask a question to get a grounded answer based on the current report.",
+                            id="ai-answer",
+                            className="ai-empty",
+                        ),
+                    ],
+                    className="ai-chat-modal",
+                ),
+            ],
+            className="ai-chat-overlay",
+        ),
+        html.Div(
+            [
                 html.Div(
                     [
                         html.Div("SC Coverage", className="hero-kicker"),
@@ -1450,60 +1493,19 @@ app.layout = html.Div(
                             [
                                 html.Div(
                                     [
-                                        html.Div(
-                                            [
-                                                html.Span("Ask AI", className="ai-chat-title"),
-                                                html.Span(
-                                                    "About this report — click to expand",
-                                                    className="ai-chat-hint",
-                                                ),
-                                            ],
-                                            className="ai-chat-preview-text",
-                                        ),
-                                        html.Span("⤢", className="ai-chat-icon"),
-                                    ],
-                                    id="ai-chat-preview",
-                                    className="ai-chat-preview",
-                                    n_clicks=0,
-                                ),
-                                html.Div(
-                                    [
-                                        html.Div(id="ai-chat-backdrop", className="ai-chat-backdrop", n_clicks=0),
-                                        html.Div(
-                                            [
-                                                html.Div(
-                                                    [
-                                                        html.Span("Ask AI About This Report", className="ai-chat-title"),
-                                                        html.Button(
-                                                            "⤡",
-                                                            id="ai-chat-minimize",
-                                                            className="ai-chat-icon-btn",
-                                                            n_clicks=0,
-                                                            title="Minimize",
-                                                        ),
-                                                    ],
-                                                    className="ai-chat-header",
-                                                ),
-                                                dcc.Textarea(
-                                                    id="ai-question",
-                                                    className="ai-question",
-                                                    placeholder="Ask about coverage logic, risk drivers, timing exposure, or what to review next.",
-                                                ),
-                                                html.Button("Ask AI", id="ask-ai", n_clicks=0, className="ai-ask-btn"),
-                                                html.Div(
-                                                    "Ask a question to get a grounded answer based on the current report.",
-                                                    id="ai-answer",
-                                                    className="ai-empty",
-                                                ),
-                                            ],
-                                            className="ai-chat-modal",
+                                        html.Span("Ask AI", className="ai-chat-title"),
+                                        html.Span(
+                                            "About this report — click to expand",
+                                            className="ai-chat-hint",
                                         ),
                                     ],
-                                    className="ai-chat-overlay",
+                                    className="ai-chat-preview-text",
                                 ),
+                                html.Span("⤢", className="ai-chat-icon"),
                             ],
-                            id="ai-chat-panel",
-                            className="ai-chat is-collapsed",
+                            id="ai-chat-preview",
+                            className="ai-chat-preview",
+                            n_clicks=0,
                         ),
                     ],
                     className="sidebar",
@@ -1602,7 +1604,8 @@ app.layout = html.Div(
             className="layout-grid",
         ),
     ],
-    className="app-shell",
+    id="ai-chat-panel",
+    className="app-shell ai-chat is-collapsed",
 )
 
 
@@ -1728,9 +1731,9 @@ app.clientside_callback(
         }
         const triggeredId = ctx.triggered[0].prop_id.split(".")[0];
         if (triggeredId === "ai-chat-preview") {
-            return "ai-chat is-expanded";
+            return "app-shell ai-chat is-expanded";
         }
-        return "ai-chat is-collapsed";
+        return "app-shell ai-chat is-collapsed";
     }
     """,
     Output("ai-chat-panel", "className"),
