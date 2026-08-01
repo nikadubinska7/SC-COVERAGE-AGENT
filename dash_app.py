@@ -322,35 +322,6 @@ def get_pinecone_rules(
         return [], str(exc)
 
 
-def render_rule_explanations(
-    rules: list[dict[str, Any]],
-    error: str | None,
-) -> html.Div:
-    if error:
-        return html.Div(
-            f"Pinecone rules unavailable: {error}",
-            className="ai-empty",
-        )
-
-    if not rules:
-        return html.Div("No Pinecone rules returned for this report.", className="ai-empty")
-
-    return html.Div(
-        [
-            html.Div(
-                [
-                    html.Div(str(rule.get("title") or "Reporting rule"), className="rule-title"),
-                    html.Div(str(rule.get("source") or "Pinecone"), className="rule-source"),
-                    html.Div(str(rule.get("text") or "")[:700], className="rule-text"),
-                ],
-                className="rule-card",
-            )
-            for rule in rules
-        ],
-        className="rule-list",
-    )
-
-
 def build_report_chat_context(report_data: dict[str, Any] | None) -> dict[str, Any]:
     if not report_data:
         return {}
@@ -882,6 +853,7 @@ def run_report_endpoint():
     order_type = str(payload.get("order_type") or DEFAULT_ORDER_TYPE)
     recipient_name = str(payload.get("recipient_name") or "")
     dashboard_url = str(payload.get("dashboard_url") or request.host_url.rstrip("/"))
+    airtable_exceptions_url = str(payload.get("airtable_exceptions_url") or "").strip()
     exception_limit = int(payload.get("exception_limit") or 50)
 
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -905,6 +877,7 @@ def run_report_endpoint():
                 "generated_at": generated_at,
                 "report_run_id": generated_at,
                 "dashboard_url": dashboard_url,
+                "airtable_exceptions_url": airtable_exceptions_url,
                 "banner": banner,
                 "seasons": seasons,
                 "requested_months": requested_months,
@@ -942,6 +915,15 @@ The SC Coverage dashboard is ready.
 
 Dashboard:
 {dashboard_url}
+"""
+
+    if airtable_exceptions_url:
+        email_body += f"""
+Coverage Exceptions Review:
+{airtable_exceptions_url}
+"""
+
+    email_body += f"""
 
 Report scope:
 - Banner: {banner}
@@ -971,6 +953,7 @@ This message was generated automatically by the SC Coverage Report Agent.
             "generated_at": generated_at,
             "report_run_id": generated_at,
             "dashboard_url": dashboard_url,
+            "airtable_exceptions_url": airtable_exceptions_url,
             "banner": banner,
             "seasons": seasons,
             "requested_months": requested_months,
@@ -1072,7 +1055,7 @@ app.index_string = """
       }
       .layout-grid {
         display: grid;
-        grid-template-columns: 220px minmax(0, 1fr);
+        grid-template-columns: 260px minmax(0, 1fr);
         gap: 20px;
         align-items: start;
       }
@@ -1193,54 +1176,135 @@ app.index_string = """
         gap: 12px;
         margin-top: 14px;
       }
-      .ai-grid {
-        display: grid;
-        grid-template-columns: 0.95fr 1.05fr;
-        gap: 12px;
-        margin-top: 14px;
+      .sidebar-divider {
+        height: 1px;
+        background: var(--border);
+        margin: 18px 0 12px;
       }
-      .rule-list {
-        display: grid;
+      .ai-chat-preview {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
         gap: 8px;
-      }
-      .rule-card {
-        background: var(--surface-muted);
-        border: 1px solid var(--border);
+        background: rgba(42, 120, 214, 0.06);
+        border: 1px solid rgba(42, 120, 214, 0.30);
+        border-left: 3px solid var(--accent-blue);
         border-radius: 8px;
         padding: 10px 12px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
       }
-      .rule-title {
-        color: var(--ink-primary);
+      .ai-chat-preview:hover {
+        background: rgba(42, 120, 214, 0.11);
+        border-color: rgba(42, 120, 214, 0.45);
+      }
+      .ai-chat-preview-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .ai-chat-title {
+        color: var(--accent-blue);
         font-size: 12px;
         font-weight: 700;
       }
-      .rule-source {
+      .ai-chat-hint {
         color: var(--ink-muted);
         font-size: 10.5px;
-        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .rule-text {
-        color: var(--ink-secondary);
-        font-size: 12px;
-        line-height: 1.45;
-        margin-top: 7px;
+      .ai-chat-icon {
+        color: var(--accent-blue);
+        font-size: 15px;
+        flex: none;
+      }
+      .ai-chat.is-expanded .ai-chat-preview {
+        display: none;
+      }
+      .ai-chat-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+      }
+      .ai-chat.is-expanded .ai-chat-overlay {
+        display: flex;
+      }
+      .ai-chat-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(11, 11, 11, 0.4);
+        cursor: pointer;
+      }
+      .ai-chat-modal {
+        position: relative;
+        z-index: 1;
+        width: 620px;
+        max-width: 92vw;
+        max-height: 82vh;
+        overflow-y: auto;
+        background: var(--surface);
+        border-top: 4px solid var(--accent-blue);
+        border-radius: 12px;
+        box-shadow: 0 24px 48px rgba(11, 11, 11, 0.22), 0 4px 12px rgba(11, 11, 11, 0.10);
+        padding: 18px 20px 20px;
+        animation: aiChatPop 0.15s ease-out;
+      }
+      @keyframes aiChatPop {
+        from { opacity: 0; transform: scale(0.97); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .ai-chat-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .ai-chat-header .ai-chat-title {
+        font-size: 14px;
+      }
+      .ai-chat-icon-btn {
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        margin: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(42, 120, 214, 0.08);
+        border: 1px solid rgba(42, 120, 214, 0.30);
+        color: var(--accent-blue);
+        border-radius: 6px;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .ai-chat-icon-btn:hover {
+        background: rgba(42, 120, 214, 0.16);
       }
       .ai-empty, .ai-answer {
         color: var(--ink-secondary);
-        font-size: 12.5px;
-        line-height: 1.5;
+        font-size: 13px;
+        line-height: 1.55;
         padding: 10px 12px;
       }
       .ai-answer {
         background: var(--surface-muted);
         border: 1px solid var(--border);
         border-radius: 8px;
-        margin-top: 10px;
+        margin-top: 12px;
+        max-height: 360px;
+        overflow-y: auto;
         white-space: pre-wrap;
       }
       .ai-question {
         width: 100%;
-        min-height: 86px;
+        min-height: 160px;
         box-sizing: border-box;
         resize: vertical;
         border: 1px solid var(--border);
@@ -1249,12 +1313,20 @@ app.index_string = """
         color: var(--ink-primary);
         background: var(--surface);
         font-family: var(--font);
-        font-size: 12.5px;
-        line-height: 1.45;
+        font-size: 13px;
+        line-height: 1.5;
       }
       .ai-question:focus {
         outline: 2px solid rgba(42, 120, 214, 0.18);
         border-color: var(--accent-blue);
+      }
+      .ai-ask-btn {
+        background: var(--accent-blue) !important;
+        color: #ffffff !important;
+        border: 1px solid var(--accent-blue) !important;
+      }
+      .ai-ask-btn:hover {
+        background: #2166ba !important;
       }
       button {
         background: var(--surface);
@@ -1298,7 +1370,7 @@ app.index_string = """
         margin-right: 10px;
       }
       @media (max-width: 1100px) {
-        .layout-grid, .chart-grid, .tables-grid, .insight-list, .ai-grid {
+        .layout-grid, .chart-grid, .tables-grid, .insight-list {
           grid-template-columns: 1fr;
         }
         .sidebar, .dashboard-main {
@@ -1373,6 +1445,66 @@ app.layout = html.Div(
                         ),
                         *[dropdown(column, label) for column, label in FILTER_CONFIG],
                         html.Button("Refresh Data", id="refresh-data", n_clicks=0),
+                        html.Div(className="sidebar-divider"),
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Div(
+                                            [
+                                                html.Span("Ask AI", className="ai-chat-title"),
+                                                html.Span(
+                                                    "About this report — click to expand",
+                                                    className="ai-chat-hint",
+                                                ),
+                                            ],
+                                            className="ai-chat-preview-text",
+                                        ),
+                                        html.Span("⤢", className="ai-chat-icon"),
+                                    ],
+                                    id="ai-chat-preview",
+                                    className="ai-chat-preview",
+                                    n_clicks=0,
+                                ),
+                                html.Div(
+                                    [
+                                        html.Div(id="ai-chat-backdrop", className="ai-chat-backdrop", n_clicks=0),
+                                        html.Div(
+                                            [
+                                                html.Div(
+                                                    [
+                                                        html.Span("Ask AI About This Report", className="ai-chat-title"),
+                                                        html.Button(
+                                                            "⤡",
+                                                            id="ai-chat-minimize",
+                                                            className="ai-chat-icon-btn",
+                                                            n_clicks=0,
+                                                            title="Minimize",
+                                                        ),
+                                                    ],
+                                                    className="ai-chat-header",
+                                                ),
+                                                dcc.Textarea(
+                                                    id="ai-question",
+                                                    className="ai-question",
+                                                    placeholder="Ask about coverage logic, risk drivers, timing exposure, or what to review next.",
+                                                ),
+                                                html.Button("Ask AI", id="ask-ai", n_clicks=0, className="ai-ask-btn"),
+                                                html.Div(
+                                                    "Ask a question to get a grounded answer based on the current report.",
+                                                    id="ai-answer",
+                                                    className="ai-empty",
+                                                ),
+                                            ],
+                                            className="ai-chat-modal",
+                                        ),
+                                    ],
+                                    className="ai-chat-overlay",
+                                ),
+                            ],
+                            id="ai-chat-panel",
+                            className="ai-chat is-collapsed",
+                        ),
                     ],
                     className="sidebar",
                 ),
@@ -1389,37 +1521,6 @@ app.layout = html.Div(
                                 panel("Timing Risk", dcc.Graph(id="timing-risk")),
                             ],
                             className="chart-grid",
-                        ),
-                        html.Div(
-                            [
-                                panel(
-                                    "Pinecone Business Rules",
-                                    html.Div(id="rule-explanations"),
-                                ),
-                                panel(
-                                    "Ask AI About This Report",
-                                    html.Div(
-                                        [
-                                            dcc.Textarea(
-                                                id="ai-question",
-                                                className="ai-question",
-                                                placeholder="Ask about coverage logic, risk drivers, timing exposure, validation, or what to review next.",
-                                            ),
-                                            html.Button(
-                                                "Ask AI",
-                                                id="ask-ai",
-                                                n_clicks=0,
-                                            ),
-                                            html.Div(
-                                                "Ask a question to get a Pinecone-grounded answer based on the current report.",
-                                                id="ai-answer",
-                                                className="ai-empty",
-                                            ),
-                                        ],
-                                    ),
-                                ),
-                            ],
-                            className="ai-grid",
                         ),
                         html.Div(
                             [
@@ -1517,7 +1618,6 @@ app.layout = html.Div(
     Output("coverage-table", "columns"),
     Output("exceptions-table", "data"),
     Output("exceptions-table", "columns"),
-    Output("rule-explanations", "children"),
     Output("report-context-store", "data"),
     Output("rules-context-store", "data"),
     Input("metric-mode", "value"),
@@ -1575,7 +1675,7 @@ def update_dashboard(
 
     summary_columns = [{"name": column, "id": column} for column in (summary_rows[0].keys() if summary_rows else [])]
     exception_columns = [{"name": column, "id": column} for column in (exception_rows[0].keys() if exception_rows else [])]
-    rules, rules_error = get_pinecone_rules(report_data, selected_filters)
+    rules, _rules_error = get_pinecone_rules(report_data, selected_filters)
 
     return (
         cards,
@@ -1589,7 +1689,6 @@ def update_dashboard(
         summary_columns,
         exception_rows,
         exception_columns,
-        render_rule_explanations(rules, rules_error),
         report_data or {},
         rules,
     )
@@ -1612,12 +1711,34 @@ def update_ai_answer(
 ) -> tuple[str, str]:
     if not n_clicks:
         return (
-            "Ask a question to get a Pinecone-grounded answer based on the current report.",
+            "Ask a question to get a grounded answer based on the current report.",
             "ai-empty",
         )
 
     answer = answer_report_question(question or "", report_data, rules or [])
     return answer, "ai-answer"
+
+
+app.clientside_callback(
+    """
+    function(previewClicks, minimizeClicks, backdropClicks) {
+        const ctx = dash_clientside.callback_context;
+        if (!ctx.triggered.length) {
+            return dash_clientside.no_update;
+        }
+        const triggeredId = ctx.triggered[0].prop_id.split(".")[0];
+        if (triggeredId === "ai-chat-preview") {
+            return "ai-chat is-expanded";
+        }
+        return "ai-chat is-collapsed";
+    }
+    """,
+    Output("ai-chat-panel", "className"),
+    Input("ai-chat-preview", "n_clicks"),
+    Input("ai-chat-minimize", "n_clicks"),
+    Input("ai-chat-backdrop", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 if __name__ == "__main__":
