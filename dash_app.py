@@ -169,6 +169,101 @@ def normalize_payload_list(value: Any) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def clean_json_value(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def clean_text_value(value: Any) -> str:
+    cleaned = clean_json_value(value)
+    if cleaned is None:
+        return ""
+    return str(cleaned).strip()
+
+
+def clean_number_value(value: Any) -> float | int:
+    cleaned = clean_json_value(value)
+    if cleaned is None:
+        return 0
+    number = float(cleaned)
+    if number.is_integer():
+        return int(number)
+    return round(number, 2)
+
+
+def build_coverage_exceptions(
+    df: pd.DataFrame,
+    report_run_id: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if df.empty or "status" not in df.columns:
+        return []
+
+    open_orders = df[df["status"].astype(str).str.strip() == "Open Order"].copy()
+    if open_orders.empty:
+        return []
+
+    open_orders = open_orders.sort_values(
+        ["report_wholesale_value", "report_volume"],
+        ascending=[False, False],
+    ).head(max(1, limit))
+
+    exceptions: list[dict[str, Any]] = []
+
+    for index, row in open_orders.reset_index(drop=True).iterrows():
+        source_row = clean_json_value(row.get("source_row_number")) or index + 1
+        category = clean_text_value(row.get("category"))
+        sub_category = clean_text_value(row.get("sub_category"))
+        season = clean_text_value(row.get("season"))
+        requested_month = clean_text_value(row.get("requested_month"))
+        timing_bucket = clean_text_value(row.get("timing_bucket"))
+        value = clean_number_value(row.get("report_wholesale_value"))
+        volume = clean_number_value(row.get("report_volume"))
+
+        exceptions.append(
+            {
+                "exception_id": f"EXC-{source_row}",
+                "report_run_id": report_run_id,
+                "source_row_number": source_row,
+                "division": clean_text_value(row.get("division")),
+                "category": category,
+                "sub_category": sub_category,
+                "gender": clean_text_value(row.get("gender")),
+                "age_division": clean_text_value(row.get("age_division")),
+                "season": season,
+                "requested_month": requested_month,
+                "eta": clean_json_value(row.get("eta")),
+                "customer_request_date": clean_json_value(
+                    row.get("customer_request_date")
+                ),
+                "timing_bucket": timing_bucket,
+                "open_order_value": value,
+                "open_order_volume": volume,
+                "coverage_performance": clean_text_value(
+                    row.get("coverage_performance")
+                ),
+                "owner": "",
+                "review_status": "New",
+                "comment": (
+                    f"Open order exposure of {format_number(value, 'Value')} "
+                    f"and {format_number(volume)} units for {category or 'uncategorized'}"
+                    f" / {sub_category or 'uncategorized'} in {season}"
+                    f" {requested_month}. Timing: {timing_bucket or 'N/A'}."
+                ),
+                "brand": clean_text_value(row.get("brand")),
+                "style_color": clean_text_value(row.get("style_color")),
+                "style_name": clean_text_value(row.get("style_name")),
+                "sold_to_name": clean_text_value(row.get("sold_to_name")),
+                "ship_to_name": clean_text_value(row.get("ship_to_name")),
+            }
+        )
+
+    return exceptions
+
+
 def empty_figure(message: str) -> go.Figure:
     fig = go.Figure()
     fig.add_annotation(
@@ -615,6 +710,7 @@ def run_report_endpoint():
     order_type = str(payload.get("order_type") or DEFAULT_ORDER_TYPE)
     recipient_name = str(payload.get("recipient_name") or "")
     dashboard_url = str(payload.get("dashboard_url") or request.host_url.rstrip("/"))
+    exception_limit = int(payload.get("exception_limit") or 50)
 
     generated_at = datetime.now(timezone.utc).isoformat()
 
@@ -653,6 +749,11 @@ def run_report_endpoint():
     report_data = build_coverage_report(filtered_df.to_dict(orient="records"))
     summary = report_data.get("executive_summary", {})
     validation = report_data.get("validation", {})
+    coverage_exceptions = build_coverage_exceptions(
+        filtered_df,
+        report_run_id=generated_at,
+        limit=exception_limit,
+    )
 
     season_text = ", ".join(str(season) for season in seasons)
     requested_month_text = ", ".join(requested_months) if requested_months else "All"
@@ -683,6 +784,7 @@ Executive summary:
 - Open order volume: {format_number(summary.get("open_order_volume"))}
 - Included rows: {summary.get("included_rows", 0):,}
 - Cancelled rows excluded: {summary.get("cancelled_rows", 0):,}
+- Coverage exceptions exported: {len(coverage_exceptions):,}
 - Risk level: {risk_level_value}
 
 Open the dashboard link to view the current executive report with filters, value/volume views, timing risk, and open exceptions.
@@ -715,6 +817,8 @@ This message was generated automatically by the SC Coverage Report Agent.
             "open_order_volume": summary.get("open_order_volume"),
             "volume_coverage_percentage": summary.get("volume_coverage_percentage"),
             "risk_level": risk_level_value,
+            "coverage_exceptions_count": len(coverage_exceptions),
+            "coverage_exceptions": coverage_exceptions,
             "validation_passed": validation.get("passes_reconciliation"),
             "value_difference": validation.get("value_difference"),
             "volume_difference": validation.get("volume_difference"),
