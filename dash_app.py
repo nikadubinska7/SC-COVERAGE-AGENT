@@ -20,6 +20,7 @@ from src.services.dashboard_data import (
     build_filter_options,
     load_orderbook_records,
     records_to_filter_dataframe,
+    safe_generate_observations,
 )
 from src.services.transformations import build_coverage_report
 from src.tools.pinecone_tool import retrieve_reporting_rules
@@ -899,6 +900,7 @@ def run_report_endpoint():
         report_run_id=generated_at,
         limit=exception_limit,
     )
+    agent_observations, agent_observation_error = safe_generate_observations(report_data)
 
     season_text = ", ".join(str(season) for season in seasons)
     requested_month_text = ", ".join(requested_months) if requested_months else "All"
@@ -941,6 +943,9 @@ Executive summary:
 - Coverage exceptions exported: {len(coverage_exceptions):,}
 - Risk level: {risk_level_value}
 
+Agent observations:
+{chr(10).join(f"- {observation}" for observation in agent_observations[:5])}
+
 Open the dashboard link to view the current executive report with filters, value/volume views, timing risk, and open exceptions.
 
 This message was generated automatically by the SC Coverage Report Agent.
@@ -974,6 +979,8 @@ This message was generated automatically by the SC Coverage Report Agent.
             "risk_level": risk_level_value,
             "coverage_exceptions_count": len(coverage_exceptions),
             "coverage_exceptions": coverage_exceptions,
+            "agent_observations": agent_observations,
+            "agent_observation_error": agent_observation_error,
             "validation_passed": validation.get("passes_reconciliation"),
             "value_difference": validation.get("value_difference"),
             "volume_difference": validation.get("volume_difference"),
