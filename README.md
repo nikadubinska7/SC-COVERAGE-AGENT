@@ -2,24 +2,24 @@
 
 Autonomous supply-chain coverage reporting agent for Nike/Snipes future orderbook analysis.
 
-The project combines deterministic reporting, a LangGraph/ReAct agent layer, Pinecone RAG, an executive Dash/Plotly dashboard, n8n automation, Airtable review tracking, and Gmail notification.
+The project combines deterministic reporting, a LangGraph/ReAct agent layer, Pinecone RAG, an executive Dash/Plotly dashboard, n8n automation, Google Sheets pivot analysis, and Gmail notification.
 
 ## Final Workflow
 
 ```text
 Supabase orderbook data
   -> Dash/Plotly dashboard deployed on Render
-  -> n8n HTTP Request calls /run-report
+  -> n8n calls /export-orderbook for Google Sheets pivot analysis
   -> Python calculates coverage metrics and validation
-  -> ReAct agent generates report observations
+  -> LangGraph/ReAct generates report observations
   -> Pinecone provides business-rule context for dashboard explanations/chat
-  -> Airtable stores report runs and coverage exceptions
-  -> Gmail sends the dashboard and Airtable review links
+  -> Google Sheets stores the full filtered orderbook for pivots
+  -> Gmail sends dashboard and Google Sheets links with agent observations
 ```
 
 ## Main Components
 
-- `dash_app.py` - Render-deployed Dash dashboard and `/run-report` endpoint.
+- `dash_app.py` - Render-deployed Dash dashboard, `/run-report`, and `/export-orderbook` endpoints.
 - `src/graph.py` - LangGraph workflow for validation, RAG retrieval, Supabase extraction, calculation, validation, ReAct observations, and local export.
 - `src/agent.py` - ReAct-style agent using tools for summary, risk, and validation reasoning.
 - `src/tools/pinecone_tool.py` - Pinecone retrieval tool for reporting rules.
@@ -30,6 +30,16 @@ Supabase orderbook data
 - `docs/architecture.md` - final architecture diagram and workflow explanation.
 - `docs/n8n_workflow.md` - n8n setup and field mapping notes.
 - `docs/google_sheets_workflow.md` - Google Sheets export and pivot-table workflow.
+
+## Core Deliverables
+
+- Supabase data layer: cleaned orderbook stored and queried as the source of truth.
+- LangGraph orchestration: graph-based agent workflow for input validation, retrieval, extraction, calculation, validation, and observations.
+- ReAct agent reasoning: tool-based observations included in report payloads and Gmail notifications.
+- Pinecone RAG: reporting rules and validation knowledge retrieved for dashboard explanations and AI chat.
+- Dash/Plotly dashboard: executive report deployed on Render.
+- n8n automation: report/export workflow that refreshes Google Sheets and sends Gmail notification.
+- Google Sheets analysis layer: full filtered orderbook export with reusable pivot tables.
 
 ## Business Outputs
 
@@ -46,11 +56,10 @@ The dashboard reports:
 
 n8n creates:
 
-- one Airtable `Report runs` record per workflow run
-- prioritized Airtable `Coverage Exceptions` records for review/action
-- one Gmail notification containing dashboard and Airtable review links
-
-A second n8n workflow can export the full filtered orderbook to Google Sheets for pivot-table analysis.
+- a refreshed Google Sheets `Raw OB` export for the selected report scope
+- reusable pivot tables in `Coverage Summary`
+- one Gmail notification containing dashboard and Google Sheets links
+- ReAct agent observations in the Gmail body
 
 ## Environment Variables
 
@@ -106,16 +115,19 @@ python scripts/ingest_pinecone.py
 
 ## n8n Automation
 
-The n8n workflow uses:
+The Google Sheets analyst workflow uses:
 
 ```text
 Manual Trigger
--> HTTP Request to Render /run-report
--> Airtable: create Report runs record
--> Gmail: send dashboard/review links
--> Code: split coverage_exceptions array
--> Airtable: create Coverage Exceptions records
+-> HTTP Request to Render /export-orderbook
+-> Google Sheets: clear Raw OB
+-> Code: convert raw row keys into representative column labels
+-> Google Sheets: append Raw OB rows
+-> Code: prepare one email payload
+-> Gmail: send dashboard/Google Sheets links and agent observations
 ```
+
+The Google Sheets workflow writes the full filtered orderbook to the `Raw OB` tab. The `Coverage Summary` tab contains manually created pivot tables for season/category/timing analysis.
 
 The HTTP Request body includes:
 
@@ -125,9 +137,7 @@ The HTTP Request body includes:
   "seasons": ["HO2026", "SP2027"],
   "order_type": "Standard Order - Futures",
   "dashboard_url": "https://sc-coverage-dashboard.onrender.com",
-  "airtable_exceptions_url": "https://airtable.com/...",
-  "recipient_name": "Nika",
-  "exception_limit": 50
+  "google_sheet_url": "https://docs.google.com/spreadsheets/d/..."
 }
 ```
 
@@ -147,6 +157,7 @@ Current test coverage validates:
 - reconciliation checks
 - dashboard data helpers
 - n8n payload behavior
+- Google Sheets export payload and agent observations
 
 ## Design Decision
 
@@ -154,10 +165,10 @@ The original plan used Google Sheets as the main report output. During execution
 
 ```text
 Dash/Plotly = executive dashboard
-Airtable = operational exception review
+Google Sheets = full-data pivot analysis
 Gmail = notification
 Supabase = source of truth
-Pinecone + ReAct = agent reasoning/context layer
+Pinecone + LangGraph/ReAct = agent reasoning/context layer
 ```
 
 This keeps calculations deterministic while using AI for rule-grounded explanations and observations.

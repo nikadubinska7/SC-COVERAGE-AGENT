@@ -2,28 +2,21 @@
 
 ## Purpose
 
-This workflow is a second n8n workflow alongside the Airtable workflow.
-
-Use Airtable for operational exception review.
-Use Google Sheets for full database export and pivot-table analysis.
+This workflow exports the full filtered orderbook to Google Sheets for pivot-table analysis.
 
 ## Recommended Design
 
-Use a Google Sheets template with pre-created pivot tables.
+Use a Google Sheets file with a raw-data tab and a summary tab with pre-created pivot tables.
 
 Tabs:
 
 ```text
-Raw Orderbook
-Pivot - Coverage by Season
-Pivot - Category Risk
-Pivot - Timing Risk
-Pivot - Open Orders
-README
+Raw OB
+Coverage Summary
 ```
 
-n8n updates only `Raw Orderbook`.
-The pivot tabs remain in the sheet and refresh from the raw-data tab.
+n8n updates only `Raw OB`.
+The `Coverage Summary` pivots remain in the sheet and refresh from the raw-data tab.
 
 ## Backend Endpoint
 
@@ -60,67 +53,109 @@ rows           row objects
 values         row arrays matching columns
 rows_count     number of exported rows
 summary        report KPI summary
+agent_observations ReAct agent observations
 ```
 
 ## n8n Node Order
 
-Duplicate the Airtable workflow and use this structure:
+Use this structure:
 
 ```text
 Manual Trigger
 -> HTTP Request: /export-orderbook
--> Google Sheets: clear Raw Orderbook
--> Google Sheets: append header row
--> Code: split values into rows
--> Google Sheets: append raw rows
+-> Google Sheets: clear Raw OB
+-> Code: prepare rows with representative column names
+-> Google Sheets: append Raw OB rows
+-> Code: prepare one email payload
 -> Gmail: send Sheet + dashboard links
 ```
 
-## Code Node
+Do not add a separate header-row append node. The Google Sheets append node creates headers from the JSON keys. A separate header node creates duplicate header rows.
 
-Use this to convert the `values` array into one n8n item per spreadsheet row:
+## Code Node: Prepare Rows
+
+Use this to convert each raw object into one n8n item with readable column names:
 
 ```javascript
-const values = $('HTTP Request').first().json.values || [];
+const rows = $('HTTP Request').first().json.rows || [];
 
-return values.map(row => ({
-  json: {
-    row,
-  },
-}));
-```
+function titleCase(value) {
+  const special = {
+    eta: 'ETA',
+    crd: 'CRD',
+    id: 'ID',
+    usd: 'USD',
+    msrp: 'MSRP',
+    ob: 'OB'
+  };
 
-The Google Sheets append node should append:
+  return value
+    .split('_')
+    .map(part => {
+      const lower = part.toLowerCase();
+      if (special[lower]) return special[lower];
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
 
-```text
-{{$json.row}}
+return rows.map(row => {
+  const output = {};
+
+  for (const [key, value] of Object.entries(row)) {
+    output[titleCase(key)] = value;
+  }
+
+  return { json: output };
+});
 ```
 
 ## Pivot Tables
 
-Create pivots manually once in the template.
+Create pivots manually once in `Coverage Summary`.
 
 Useful pivots:
 
 1. Coverage by Season
-   - Rows: `season`, `requested_month`
-   - Columns: `status`
-   - Values: `report_wholesale_value`, `report_volume`
+   - Rows: `Season`, `Requested Month`
+   - Columns: `Status`
+   - Values: `Report Wholesale Value`, `Report Volume`
 
 2. Category Risk
-   - Rows: `category`, `sub_category`
-   - Columns: `status`
-   - Values: `report_wholesale_value`, `report_volume`
+   - Rows: `Age Division`, `Sub Category`
+   - Columns: `Status`, `Coverage Performance`
+   - Values: `Report Wholesale Value`, `Report Volume`
 
 3. Timing Risk
-   - Rows: `timing_bucket`
-   - Columns: `season`
-   - Values: `report_wholesale_value`, `report_volume`
+   - Rows: `Requested Month`
+   - Columns: `Timing Bucket`
+   - Values: `Report Wholesale Value`, `Report Volume`
 
 4. Open Orders
-   - Filter: `status = Open Order`
-   - Rows: `category`, `sub_category`, `style_name`
-   - Values: `report_wholesale_value`, `report_volume`
+   - Filter: `Status = Open Order`
+   - Rows: `Category`, `Sub Category`, `Style Name`
+   - Values: `Report Wholesale Value`, `Report Volume`
+
+## Gmail Notification
+
+Send one email after the append node. Add a final code node first:
+
+```javascript
+return [
+  {
+    json: $('HTTP Request').first().json
+  }
+];
+```
+
+This prevents Gmail from receiving one item per spreadsheet row.
+
+The email should include:
+
+- dashboard link
+- Google Sheets link
+- rows and columns exported
+- ReAct agent observations from `agent_observations`
 
 ## Known Note
 

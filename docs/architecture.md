@@ -8,13 +8,14 @@ flowchart LR
     B --> C[Supabase orderbook table]
 
     C --> D[Dash / Plotly Dashboard on Render]
-    D --> E[/run-report HTTP endpoint]
+    D --> E[/export-orderbook HTTP endpoint]
 
-    F[n8n Manual Trigger] --> G[HTTP Request to /run-report]
-    G --> H[Airtable: Report runs]
-    H --> I[Gmail: dashboard + review links]
-    I --> J[Code: split coverage_exceptions]
-    J --> K[Airtable: Coverage Exceptions]
+    F[n8n Manual Trigger] --> G[HTTP Request to /export-orderbook]
+    G --> H[Google Sheets: clear Raw OB]
+    H --> I[Code: prepare representative row keys]
+    I --> J[Google Sheets: append Raw OB rows]
+    J --> K[Code: prepare one email payload]
+    K --> T[Gmail: dashboard + Google Sheets links]
 
     C --> L[LangGraph workflow]
     L --> M[Deterministic coverage calculations]
@@ -31,12 +32,12 @@ flowchart LR
 
 1. Cleaned orderbook data is loaded into Supabase.
 2. The Dash dashboard on Render reads Supabase and builds the executive report.
-3. n8n triggers the Render `/run-report` endpoint through an HTTP Request node.
-4. `/run-report` calculates report KPIs, validation results, prioritized coverage exceptions, and ReAct agent observations.
-5. n8n creates one Airtable `Report runs` record.
-6. Gmail sends one email containing the dashboard link and Airtable exception-review link.
-7. n8n splits the `coverage_exceptions` array into individual items.
-8. n8n creates Airtable `Coverage Exceptions` records for business review and follow-up.
+3. n8n triggers the Render `/export-orderbook` endpoint through an HTTP Request node.
+4. `/export-orderbook` calculates report KPIs, validation results, and ReAct agent observations, then returns the filtered raw orderbook rows.
+5. n8n clears the Google Sheets `Raw OB` tab.
+6. n8n converts raw snake_case fields into representative Google Sheets column labels.
+7. n8n appends the full filtered orderbook to Google Sheets.
+8. Gmail sends one email containing the dashboard link, Google Sheets link, export summary, and ReAct agent observations.
 
 ## Agent Layer
 
@@ -60,7 +61,7 @@ validate_input
 -> export_local_report
 ```
 
-The production `/run-report` endpoint reuses the same deterministic calculation services and calls the ReAct observation generator with fallback behavior. This makes the agent reasoning visible in the automated email/report payload while keeping the deployed dashboard fast and stable.
+The production `/export-orderbook` endpoint reuses the same deterministic calculation services and calls the ReAct observation generator with fallback behavior. This makes the agent reasoning visible in the automated email/report payload while keeping the deployed dashboard fast and stable.
 
 ## Pinecone RAG
 
@@ -117,24 +118,23 @@ The project uses real APIs/connectors:
 - Supabase API for orderbook data.
 - Pinecone API for RAG retrieval.
 - OpenAI API for embeddings and report chat/observations.
-- Airtable n8n connector for review tables.
 - Google Sheets n8n connector for full orderbook pivot-table export.
 - Gmail n8n connector for notifications.
 - Render-hosted HTTP endpoint for workflow triggering.
 
 ## Design Decision
 
-The original brief planned Google Sheets as the report destination. During execution, the design moved to:
+The original brief planned Google Sheets as the report destination. During execution, the final design kept Google Sheets for analysis and added a professional dashboard and agent layer:
 
 ```text
-Dash/Plotly dashboard + Airtable review workflow
+Dash/Plotly dashboard + Google Sheets pivot workflow
 ```
 
 Reason:
 
 - Dash gives a more professional executive interface.
-- Airtable supports filtering, grouping, ownership, comments, and review statuses.
+- Google Sheets supports familiar pivot-table exploration for the full filtered orderbook.
 - Supabase remains the source of truth for the full orderbook.
-- Airtable receives only prioritized exceptions, avoiding duplicate raw-data storage.
+- n8n refreshes Google Sheets automatically and sends the shareable links by Gmail.
 
-Google Sheets is used as an optional analyst layer. A separate n8n workflow calls `/export-orderbook`, refreshes a `Raw Orderbook` tab, and relies on pre-created pivot-table tabs for Excel-like analysis.
+Google Sheets is the analyst layer. The n8n workflow calls `/export-orderbook`, refreshes the `Raw OB` tab, and relies on manually created pivots in `Coverage Summary` for Excel-like analysis.

@@ -53,7 +53,7 @@ The ReAct agent uses tools to reason over:
 - risk level
 - validation status
 
-The `/run-report` endpoint includes these ReAct observations in the JSON response and Gmail body.
+The `/export-orderbook` endpoint includes these ReAct observations in the JSON response and Gmail body.
 
 ## 5. RAG Layer
 
@@ -89,27 +89,29 @@ n8n runs the autonomous workflow:
 
 ```text
 Manual Trigger
--> HTTP Request to Render /run-report
--> Airtable Report runs record
+-> HTTP Request to Render /export-orderbook
+-> Google Sheets clears Raw OB
+-> Code node prepares representative column labels
+-> Google Sheets appends the full filtered orderbook
+-> Code node prepares one email payload
 -> Gmail notification
--> Code node splits coverage exceptions
--> Airtable Coverage Exceptions records
 ```
 
 Gmail sends one email with:
 
 - dashboard link
-- Airtable exception-review link
+- Google Sheets link
+- export summary
 - executive summary
 - ReAct agent observations
 
-## 8. Airtable Review Layer
+## 8. Google Sheets Analysis Layer
 
-Airtable is used for business follow-up, not as the raw database.
+Google Sheets is used for full-data business analysis and pivot-table exploration.
 
-`Report runs` tracks each generated report.
+The n8n workflow refreshes the `Raw OB` tab with the current filtered orderbook export.
 
-`Coverage Exceptions` stores the top open-order risks for review, filtering, grouping, ownership, comments, and status tracking.
+`Coverage Summary` contains pivot tables for season, category, timing, value, and volume review.
 
 ## 9. Final Value
 
@@ -120,5 +122,5 @@ The final system is an autonomous supply-chain coverage reporting agent that com
 - Pinecone RAG explanations
 - executive dashboarding
 - n8n automation
-- Airtable operational review
+- Google Sheets pivot-table analysis
 - Gmail notification
