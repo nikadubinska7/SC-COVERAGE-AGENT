@@ -96,6 +96,11 @@ def test_export_orderbook_endpoint_returns_sheet_payload(monkeypatch):
     import dash_app
 
     monkeypatch.setattr(dash_app, "load_orderbook_records", lambda **kwargs: sample_records())
+    monkeypatch.setattr(
+        dash_app,
+        "safe_generate_observations",
+        lambda report_data: (["Agent observation"], None),
+    )
 
     client = dash_app.server.test_client()
     response = client.post(
@@ -120,4 +125,6 @@ def test_export_orderbook_endpoint_returns_sheet_payload(monkeypatch):
     assert payload["header_row"] == payload["columns"]
     assert payload["rows"][0]["source_row_number"] == 2
     assert payload["values"][0][0] == 2
+    assert payload["agent_observations"] == ["Agent observation"]
+    assert payload["agent_observation_error"] is None
     assert payload["summary"]["included_rows"] == 2

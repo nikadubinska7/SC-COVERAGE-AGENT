@@ -1291,6 +1291,7 @@ def export_orderbook_endpoint():
     report_data = build_coverage_report(filtered_df.to_dict(orient="records"))
     summary = report_data.get("executive_summary", {})
     validation = report_data.get("validation", {})
+    agent_observations, agent_observation_error = safe_generate_observations(report_data)
     columns, rows, values = dataframe_to_sheet_payload(filtered_df)
 
     return jsonify(
@@ -1310,6 +1311,8 @@ def export_orderbook_endpoint():
             "header_row": columns,
             "rows": rows,
             "values": values,
+            "agent_observations": agent_observations,
+            "agent_observation_error": agent_observation_error,
             "summary": {
                 "included_rows": summary.get("included_rows"),
                 "cancelled_rows": summary.get("cancelled_rows"),
