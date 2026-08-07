@@ -90,3 +90,34 @@ def test_dashboard_payload_handles_empty_filter_result(monkeypatch):
     assert payload["records"] == []
     assert payload["report_data"] is None
     assert payload["dataframe"].empty
+
+
+def test_export_orderbook_endpoint_returns_sheet_payload(monkeypatch):
+    import dash_app
+
+    monkeypatch.setattr(dash_app, "load_orderbook_records", lambda **kwargs: sample_records())
+
+    client = dash_app.server.test_client()
+    response = client.post(
+        "/export-orderbook",
+        json={
+            "banner": "Snipes",
+            "seasons": ["HO2026", "SP2027"],
+            "order_type": "Standard Order - Futures",
+            "dashboard_url": "https://example.com",
+            "google_sheet_url": "https://docs.google.com/spreadsheets/d/test",
+        },
+    )
+
+    assert response.status_code == 200
+
+    payload = response.get_json()
+
+    assert payload["status"] == "success"
+    assert payload["mode"] == "google_sheets_export"
+    assert payload["rows_count"] == 2
+    assert payload["columns_count"] == len(payload["columns"])
+    assert payload["header_row"] == payload["columns"]
+    assert payload["rows"][0]["source_row_number"] == 2
+    assert payload["values"][0][0] == 2
+    assert payload["summary"]["included_rows"] == 2

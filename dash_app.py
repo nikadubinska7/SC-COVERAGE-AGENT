@@ -198,6 +198,74 @@ def clean_number_value(value: Any) -> float | int:
     return round(number, 2)
 
 
+def normalize_sheet_value(value: Any) -> Any:
+    cleaned = clean_json_value(value)
+
+    if isinstance(cleaned, pd.Timestamp):
+        return cleaned.date().isoformat()
+
+    return cleaned
+
+
+def preferred_sheet_columns(df: pd.DataFrame) -> list[str]:
+    preferred = [
+        "source_row_number",
+        "banner",
+        "season",
+        "requested_month",
+        "status",
+        "timing_bucket",
+        "coverage_performance",
+        "eta",
+        "customer_request_date",
+        "order_type",
+        "division",
+        "category",
+        "sub_category",
+        "gender",
+        "age_division",
+        "brand",
+        "style_color",
+        "style_name",
+        "sold_to_name",
+        "ship_to_name",
+        "ordered_quantity",
+        "confirmed_quantity",
+        "remaining_to_ship_quantity",
+        "confirmed_wholesale",
+        "available_wholesale",
+        "report_wholesale_value",
+        "report_volume",
+        "is_cancelled",
+        "is_included",
+    ]
+    selected = [column for column in preferred if column in df.columns]
+    remaining = [column for column in df.columns if column not in selected]
+    return selected + remaining
+
+
+def dataframe_to_sheet_payload(df: pd.DataFrame) -> tuple[list[str], list[dict[str, Any]], list[list[Any]]]:
+    if df.empty:
+        return [], [], []
+
+    ordered_columns = preferred_sheet_columns(df)
+    export_df = df[ordered_columns].copy()
+    export_df = export_df.where(pd.notna(export_df), None)
+
+    row_objects = []
+    row_values = []
+
+    for record in export_df.to_dict(orient="records"):
+        clean_record = {
+            column: normalize_sheet_value(value)
+            for column, value in record.items()
+        }
+        row_objects.append(clean_record)
+        row_values.append([clean_record.get(column) for column in ordered_columns])
+
+    return ordered_columns, row_objects, row_values
+
+
 def build_coverage_exceptions(
     df: pd.DataFrame,
     report_run_id: str,
@@ -1179,6 +1247,82 @@ This message was generated automatically by the SC Coverage Report Agent.
             "email_body": email_body,
         }
     )
+
+
+@server.route("/export-orderbook", methods=["POST"])
+def export_orderbook_endpoint():
+    payload = request.get_json(silent=True) or {}
+    banner = str(payload.get("banner") or DEFAULT_BANNER)
+    seasons = normalize_payload_list(payload.get("seasons")) or DEFAULT_SEASONS
+    requested_months = normalize_payload_list(payload.get("requested_months"))
+    order_type = str(payload.get("order_type") or DEFAULT_ORDER_TYPE)
+    dashboard_url = str(payload.get("dashboard_url") or request.host_url.rstrip("/"))
+    google_sheet_url = str(payload.get("google_sheet_url") or "").strip()
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    records = load_orderbook_records(
+        banner=banner,
+        seasons=seasons,
+        order_type=order_type,
+    )
+    base_df = records_to_filter_dataframe(records)
+    filtered_df = apply_dashboard_filters(
+        base_df,
+        {"requested_month": requested_months},
+    )
+
+    if filtered_df.empty:
+        return jsonify(
+            {
+                "status": "failed",
+                "mode": "google_sheets_export",
+                "generated_at": generated_at,
+                "dashboard_url": dashboard_url,
+                "google_sheet_url": google_sheet_url,
+                "banner": banner,
+                "seasons": seasons,
+                "requested_months": requested_months,
+                "order_type": order_type,
+                "error": "No records matched the export filters.",
+            }
+        ), 400
+
+    report_data = build_coverage_report(filtered_df.to_dict(orient="records"))
+    summary = report_data.get("executive_summary", {})
+    validation = report_data.get("validation", {})
+    columns, rows, values = dataframe_to_sheet_payload(filtered_df)
+
+    return jsonify(
+        {
+            "status": "success",
+            "mode": "google_sheets_export",
+            "generated_at": generated_at,
+            "dashboard_url": dashboard_url,
+            "google_sheet_url": google_sheet_url,
+            "banner": banner,
+            "seasons": seasons,
+            "requested_months": requested_months,
+            "order_type": order_type,
+            "rows_count": len(rows),
+            "columns_count": len(columns),
+            "columns": columns,
+            "header_row": columns,
+            "rows": rows,
+            "values": values,
+            "summary": {
+                "included_rows": summary.get("included_rows"),
+                "cancelled_rows": summary.get("cancelled_rows"),
+                "value_coverage_percentage": summary.get("value_coverage_percentage"),
+                "volume_coverage_percentage": summary.get("volume_coverage_percentage"),
+                "open_order_value": summary.get("open_order_value"),
+                "open_order_volume": summary.get("open_order_volume"),
+                "risk_level": summary.get("risk_level"),
+                "validation_passed": validation.get("passes_reconciliation"),
+            },
+        }
+    )
+
 
 app.index_string = """
 <!DOCTYPE html>

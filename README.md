@@ -29,6 +29,7 @@ Supabase orderbook data
 - `scripts/load_supabase.py` - loads processed orderbook data into Supabase.
 - `docs/architecture.md` - final architecture diagram and workflow explanation.
 - `docs/n8n_workflow.md` - n8n setup and field mapping notes.
+- `docs/google_sheets_workflow.md` - Google Sheets export and pivot-table workflow.
 
 ## Business Outputs
 
@@ -48,6 +49,8 @@ n8n creates:
 - one Airtable `Report runs` record per workflow run
 - prioritized Airtable `Coverage Exceptions` records for review/action
 - one Gmail notification containing dashboard and Airtable review links
+
+A second n8n workflow can export the full filtered orderbook to Google Sheets for pivot-table analysis.
 
 ## Environment Variables
 

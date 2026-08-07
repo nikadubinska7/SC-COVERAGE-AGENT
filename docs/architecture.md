@@ -118,6 +118,7 @@ The project uses real APIs/connectors:
 - Pinecone API for RAG retrieval.
 - OpenAI API for embeddings and report chat/observations.
 - Airtable n8n connector for review tables.
+- Google Sheets n8n connector for full orderbook pivot-table export.
 - Gmail n8n connector for notifications.
 - Render-hosted HTTP endpoint for workflow triggering.
 
@@ -135,3 +136,5 @@ Reason:
 - Airtable supports filtering, grouping, ownership, comments, and review statuses.
 - Supabase remains the source of truth for the full orderbook.
 - Airtable receives only prioritized exceptions, avoiding duplicate raw-data storage.
+
+Google Sheets is used as an optional analyst layer. A separate n8n workflow calls `/export-orderbook`, refreshes a `Raw Orderbook` tab, and relies on pre-created pivot-table tabs for Excel-like analysis.
